@@ -82,6 +82,8 @@ import {
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
+const normYear = (s: string | number | undefined) => String(s || '').toLowerCase().replace(/\s+/g, '').trim();
+
 const SUBJECTS_BY_YEAR: Record<YearGroup, string[]> = {
   7: ['Computer Science'],
   8: ['Computer Science'],
@@ -369,40 +371,52 @@ export default function App() {
       return assessment.boundaries;
     }
 
-    const yearKeyRaw = String(student.yearGroup || '').trim();
-    const groupName = (student.groupName || '').trim();
+    const studentYearNorm = normYear(student.yearGroup);
+    const assessmentYearNorm = assessment ? normYear(assessment.yearGroup) : null;
     
+    // Determine effective level: student's level or assessment's level as fallback
+    const effectiveLevel = student.ibLevel || assessment?.ibLevel;
+
     // Normalize logic for determining IB vs IGCSE vs KS3
-    const isIB = yearKeyRaw.toUpperCase().includes('IB') || groupName.toUpperCase().includes('IB') || yearKeyRaw.startsWith('12') || yearKeyRaw.startsWith('13');
-    const isIGCSE = yearKeyRaw.toUpperCase().includes('IGCSE') || groupName.toUpperCase().includes('IGCSE') || yearKeyRaw.startsWith('10') || yearKeyRaw.startsWith('11');
+    const isIB = studentYearNorm.includes('ib') || (student.groupName || '').toUpperCase().includes('IB') || studentYearNorm.startsWith('12') || studentYearNorm.startsWith('13');
+    const isIGCSE = studentYearNorm.includes('igcse') || (student.groupName || '').toUpperCase().includes('IGCSE') || studentYearNorm.startsWith('10') || studentYearNorm.startsWith('11');
     
-    // Normalize yearKey: "12IB" -> "12 IB", "11IGCSE" -> "11 IGCSE"
+    // Normalize yearKey: "12IB" -> "12 IB"
+    const yearKeyRaw = String(student.yearGroup || '').trim();
     const yearKey = yearKeyRaw.replace(/^(\d+)([a-zA-Z]+)$/, '$1 $2');
     
     // Helper to find a key in yearBoundaries with normalization
     const findInYearBoundaries = (queryKey: string | null) => {
       if (!queryKey) return null;
       // Exact match
-      if (yearBoundaries[queryKey]) return yearBoundaries[queryKey];
-      // Normalize both: remove spaces and lowercase
-      const norm = (s: string) => s.toLowerCase().replace(/\s+/g, '');
-      const queryNorm = norm(queryKey);
-      const matchedKey = Object.keys(yearBoundaries).find(k => norm(k) === queryNorm);
-      return matchedKey ? yearBoundaries[matchedKey] : null;
+      if (yearBoundaries[queryKey] && yearBoundaries[queryKey].length > 0) return yearBoundaries[queryKey];
+      
+      const queryNorm = normYear(queryKey);
+      
+      // Special check: If it matches a canonical year group key (e.g. "12 IB"), prefer that
+      const canonicalKeys = ['12 IB', '13 IB', '10 IGCSE', '11 IGCSE', '7', '8', '9'];
+      const canonical = canonicalKeys.find(ck => normYear(ck) === queryNorm);
+      if (canonical && yearBoundaries[canonical] && yearBoundaries[canonical].length > 0) {
+        return yearBoundaries[canonical];
+      }
+
+      const matchedKey = Object.keys(yearBoundaries).find(k => normYear(k) === queryNorm);
+      return (matchedKey && yearBoundaries[matchedKey] && yearBoundaries[matchedKey].length > 0) ? yearBoundaries[matchedKey] : null;
     };
 
     // 2. Resolve lookup keys in order of specificity
+    const groupName = (student.groupName || '').trim();
     const lookupPriorities = [
       groupName, // e.g. "12C"
     ];
 
     // Level-specific IB keys (HL/SL)
-    if (isIB && student.ibLevel) {
+    if (isIB && effectiveLevel && effectiveLevel !== 'Both') {
       const levelPrefix = yearKey.includes('IB') ? yearKey : yearKey + ' IB';
-      lookupPriorities.push(`${levelPrefix} ${student.ibLevel}`);
-      lookupPriorities.push(`${yearKeyRaw} ${student.ibLevel}`);
-      if (yearKey.startsWith('12')) lookupPriorities.push(`12 IB ${student.ibLevel}`);
-      if (yearKey.startsWith('13')) lookupPriorities.push(`13 IB ${student.ibLevel}`);
+      lookupPriorities.push(`${levelPrefix} ${effectiveLevel}`);
+      lookupPriorities.push(`${yearKeyRaw} ${effectiveLevel}`);
+      if (yearKey.startsWith('12')) lookupPriorities.push(`12 IB ${effectiveLevel}`);
+      if (yearKey.startsWith('13')) lookupPriorities.push(`13 IB ${effectiveLevel}`);
     }
 
     // Standard year group keys
@@ -817,14 +831,11 @@ export default function App() {
   // Helper for year group matching
   const matchesYearFilter = (itemYear: YearGroup, filter: YearGroup | 'all' | 'IGCSE_ALL' | 'IB_ALL') => {
     if (filter === 'all') return itemYear !== 'Graduated';
-    
-    const itemYearStr = String(itemYear);
-    const filterStr = String(filter);
-    
-    if (filter === 'IGCSE_ALL') return itemYearStr === '10' || itemYearStr === '11' || itemYearStr.includes('IGCSE');
-    if (filter === 'IB_ALL') return itemYearStr === '12' || itemYearStr === '13' || itemYearStr.includes('IB');
-    
-    return itemYearStr === filterStr;
+    const itemNorm = normYear(itemYear);
+    const filterNorm = normYear(filter);
+    if (filter === 'IGCSE_ALL') return itemNorm.includes('igcse') || itemNorm.startsWith('10') || itemNorm.startsWith('11');
+    if (filter === 'IB_ALL') return itemNorm.includes('ib') || itemNorm.startsWith('12') || itemNorm.startsWith('13');
+    return itemNorm === filterNorm;
   };
 
   // Data Migration for old year formats
@@ -3197,7 +3208,6 @@ export default function App() {
         rowGroupName = null;
       }
       const effectiveGroupName = rowGroupName || rowSheetName || groupName;
-      console.log('DEBUG: effectiveGroupName:', effectiveGroupName);
 
       // Derive year group from group name if possible (e.g., "10R" -> "10 IGCSE")
       if (effectiveGroupName) {
@@ -3258,7 +3268,7 @@ export default function App() {
         // Match year group strictly. 
         // If we find a name match in the SAME year group but DIFFERENT groupName, 
         // we'll consider it a match to avoid duplicates across sets.
-        return isNameMatch && s.yearGroup === effectiveYearGroup && s.academicYear === selectedAcademicYear;
+        return isNameMatch && normYear(s.yearGroup) === normYear(effectiveYearGroup) && s.academicYear === selectedAcademicYear;
       });
       if (!student) {
         const studentId = `student_${studentName}_${effectiveGroupName}_${selectedAcademicYear}`.replace(/\s+/g, '_').toLowerCase();
@@ -3272,7 +3282,8 @@ export default function App() {
           academicYear: selectedAcademicYear,
           isNew: isNew,
           notes: studentNotes,
-          baselineGrade: baselineGrade
+          baselineGrade: baselineGrade,
+          ibLevel: (effectiveYearGroup === '12 IB' || effectiveYearGroup === '13 IB') ? rowLevel : undefined
         } as any;
         newStudents.push(student);
       } else {
@@ -3293,6 +3304,9 @@ export default function App() {
         }
         if (baselineGrade) {
           student.baselineGrade = baselineGrade;
+        }
+        if (rowLevel && (effectiveYearGroup === '12 IB' || effectiveYearGroup === '13 IB')) {
+          student.ibLevel = rowLevel;
         }
       }
 
@@ -5309,7 +5323,7 @@ export default function App() {
                     ([7, 8, 9, '10 IGCSE', '11 IGCSE', '12 IB', '13 IB', 'Graduated'] as YearGroup[])
                       .filter(y => matchesYearFilter(y, yearFilter))
                       .map(year => {
-                        const yearStudents = filteredPerformances.filter(p => p.student.yearGroup === year);
+                        const yearStudents = filteredPerformances.filter(p => normYear(p.student.yearGroup) === normYear(year));
                         // Only show groups that have actual students (prevents ghost/deleted groups)
                         const yearGroups = (Array.from(new Set(yearStudents.map(p => p.student.groupName))).filter(Boolean) as string[]).sort((a, b) => a.localeCompare(b));
                         
@@ -5932,10 +5946,28 @@ export default function App() {
                     </div>
                     
                     {(() => {
-                      const currentYearStudents = students.filter(s => 
-                        String(s.yearGroup) === String(assessment.yearGroup) && 
-                        s.academicYear === assessment.academicYear
-                      );
+                      const unfilteredStudents = students.filter(s => {
+                        const yearMatch = normYear(s.yearGroup) === normYear(assessment.yearGroup) && s.academicYear === assessment.academicYear;
+                        if (!yearMatch) return false;
+                        
+                        // If assessment has specific level, filter students by that level
+                        if (assessment.ibLevel && assessment.ibLevel !== 'Both') {
+                          return (s.ibLevel === assessment.ibLevel);
+                        }
+                        return true;
+                      });
+
+                      // De-duplicate by name to handle 'replicating' data issues
+                      const currentYearStudents: Student[] = [];
+                      const seenNames = new Set<string>();
+                      for (const s of unfilteredStudents) {
+                        const nameKey = s.name.toLowerCase();
+                        if (!seenNames.has(nameKey)) {
+                          currentYearStudents.push(s);
+                          seenNames.add(nameKey);
+                        }
+                      }
+
                       const totalStudents = currentYearStudents.length;
                       const studentIdsInYear = new Set(currentYearStudents.map(s => s.id));
 
@@ -7084,13 +7116,34 @@ export default function App() {
                   <div className="flex-1 overflow-y-auto pr-2">
                     {(() => {
                       const assessment = assessments.find(a => a.id === showMarksModal);
-                      const relevantStudents = students.filter(s => {
-                        const matchesYear = assessment ? String(s.yearGroup) === String(assessment.yearGroup) : true;
+                      const rawRelevant = students.filter(s => {
+                        const matchesYear = assessment ? normYear(s.yearGroup) === normYear(assessment.yearGroup) : true;
                         const matchesAcademicYear = s.academicYear === selectedAcademicYear;
                         const matchesGroup = marksGroupFilter === 'all' || s.groupName === marksGroupFilter;
                         const matchesLevel = marksLevelFilter === 'all' || s.ibLevel === marksLevelFilter;
                         return matchesYear && matchesAcademicYear && matchesGroup && matchesLevel;
                       });
+
+                      // De-duplicate by name if they are in the same year (normalized)
+                      // Prefer the one that has a group name
+                      const relevantStudents: Student[] = [];
+                      const seenNames = new Set<string>();
+                      
+                      // Sort to prefer those with groupName
+                      const sortedRaw = [...rawRelevant].sort((a, b) => {
+                        if (a.groupName && !b.groupName) return -1;
+                        if (!a.groupName && b.groupName) return 1;
+                        return 0;
+                      });
+
+                      for (const s of sortedRaw) {
+                        const key = `${s.name.toLowerCase()}|${normYear(s.yearGroup)}`;
+                        if (!seenNames.has(key)) {
+                          relevantStudents.push(s);
+                          seenNames.add(key);
+                        }
+                      }
+
                       const groupNames = Array.from(new Set(relevantStudents.map(s => s.groupName))).sort();
 
                       return groupNames.map(groupName => {
@@ -7580,11 +7633,32 @@ export default function App() {
                         <tbody className="divide-y divide-slate-100">
                           {(() => {
                             const assessment = assessments.find(a => a.id === showPaperGradingModal)!;
-                            const relevantStudents = students.filter(s => 
+                            const rawRelevant = students.filter(s => 
                               s.academicYear === selectedAcademicYear && 
-                              s.yearGroup === assessment.yearGroup &&
+                              normYear(s.yearGroup) === normYear(assessment.yearGroup) &&
                               (modalGroupFilter === 'all' || s.groupName === modalGroupFilter)
                             );
+
+                            // De-duplicate by name if they are in the same year (normalized)
+                            // Prefer the one that has a group name
+                            const relevantStudents: Student[] = [];
+                            const seenNames = new Set<string>();
+                            
+                            // Sort to prefer those with groupName
+                            const sortedRaw = [...rawRelevant].sort((a, b) => {
+                              if (a.groupName && !b.groupName) return -1;
+                              if (!a.groupName && b.groupName) return 1;
+                              return 0;
+                            });
+
+                            for (const s of sortedRaw) {
+                              const key = `${s.name.toLowerCase()}|${normYear(s.yearGroup)}`;
+                              if (!seenNames.has(key)) {
+                                relevantStudents.push(s);
+                                seenNames.add(key);
+                              }
+                            }
+
                             const groupNames = Array.from(new Set(relevantStudents.map(s => s.groupName))).sort();
                             
                             return groupNames.map(groupName => {
