@@ -1264,14 +1264,14 @@ export default function App() {
 
     const groupStudents = students.filter(s => 
       s.groupName === selectedGroupDetails.name && 
-      s.academicYear === selectedAcademicYear
+      s.academicYear === selectedGroupDetails.academicYear
     );
 
-    const availableGroups = groups.filter(g => 
-      g.academicYear === selectedAcademicYear && 
-      g.id !== selectedGroupDetails.id &&
-      String(g.yearGroup) === String(selectedGroupDetails.yearGroup)
+    const isGenericSheet = ['Sheet', 'book', 'Export', 'Untitled', 'Copy', 'Page'].some(name => 
+      selectedGroupDetails.name.toLowerCase().includes(name.toLowerCase())
     );
+
+    const availableGroups = groups.filter(g => g.id !== selectedGroupDetails.id);
 
     const groupPerformances = groupStudents.map(s => {
       const studentMarks = marks.filter(m => m.studentId === s.id);
@@ -1312,6 +1312,51 @@ export default function App() {
     const groupAvgPoints = studentsWithData.length > 0
       ? studentsWithData.reduce((acc, p) => acc + p.avgPoints, 0) / studentsWithData.length
       : 0;
+
+    const moveByLevel = async () => {
+      const studentsToMove = groupStudents.filter(s => s.ibLevel);
+      if (studentsToMove.length === 0) {
+        alert("No students have HL/SL levels selected yet. Use the HL/SL buttons first.");
+        return;
+      }
+
+      setSaveStatus('saving');
+      let movedCount = 0;
+      for (const s of studentsToMove) {
+        const targetGroup = groups.find(g => 
+          g.academicYear === selectedGroupDetails.academicYear && 
+          g.name.toLowerCase().includes(s.ibLevel!.toLowerCase()) &&
+          g.id !== selectedGroupDetails.id
+        );
+        if (targetGroup) {
+          await fbUpdateStudent(s.id, { 
+            groupName: targetGroup.name,
+            yearGroup: targetGroup.yearGroup,
+            academicYear: targetGroup.academicYear
+          });
+          movedCount++;
+        }
+      }
+      
+      if (movedCount > 0) {
+        setStudents(prev => prev.map(s => {
+          const matchingStudent = studentsToMove.find(m => m.id === s.id);
+          if (matchingStudent) {
+            const targetGroup = groups.find(g => 
+              g.academicYear === selectedGroupDetails.academicYear && 
+              g.name.toLowerCase().includes(matchingStudent.ibLevel!.toLowerCase()) &&
+              g.id !== selectedGroupDetails.id
+            );
+            if (targetGroup) return { ...s, groupName: targetGroup.name, yearGroup: targetGroup.yearGroup };
+          }
+          return s;
+        }));
+        alert(`Successfully moved ${movedCount} students to their respective HL/SL groups.`);
+      } else {
+        alert("Could not find matching HL or SL groups to move students to. Please ensure your target groups have 'HL' or 'SL' in their names.");
+      }
+      setSaveStatus('idle');
+    };
 
     return (
       <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[70] flex items-center justify-center p-4">
@@ -1388,18 +1433,22 @@ export default function App() {
                     <div className="flex items-center gap-2 pr-4 border-r border-slate-200">
                       <select
                         onChange={(e) => {
-                          const targetGroup = e.target.value;
-                          if (targetGroup) {
-                            moveStudentToGroup(perf.student.id, targetGroup);
+                          const targetGroupId = e.target.value;
+                          if (targetGroupId) {
+                            moveStudentToGroup(perf.student.id, targetGroupId);
                           }
                         }}
                         className="text-[10px] bg-white border border-slate-200 rounded px-2 py-1 outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-slate-500"
                         value=""
                       >
                         <option value="">Move to...</option>
-                        {availableGroups.map(g => (
-                          <option key={g.id} value={g.name}>{g.name}</option>
-                        ))}
+                        {availableGroups.length > 0 ? (
+                          availableGroups.sort((a, b) => b.academicYear.localeCompare(a.academicYear)).map(g => (
+                            <option key={g.id} value={g.id}>{g.name} ({g.academicYear})</option>
+                          ))
+                        ) : (
+                          <option disabled>No other groups found</option>
+                        )}
                       </select>
                     </div>
                     <div className="text-right">
@@ -1414,33 +1463,65 @@ export default function App() {
               ))}
               {groupPerformances.length === 0 && (
                 <div className="py-12 text-center">
-                  <Users className="w-10 h-10 text-slate-200 mx-auto mb-2" />
-                  <p className="text-slate-400 text-sm italic">No students found assigned to this group in {selectedGroupDetails.academicYear}.</p>
+                  <div className="p-4 bg-slate-50 border border-dashed border-slate-200 rounded-3xl inline-block mb-4">
+                    <Users className="w-12 h-12 text-slate-300" />
+                  </div>
+                  <p className="text-slate-500 font-bold mb-1">This group is empty</p>
+                  <p className="text-slate-400 text-xs mb-8 italic">No students found assigned to this group in {selectedGroupDetails.academicYear}.</p>
+                  
+                  <button 
+                    onClick={() => {
+                      if (confirm(`Delete empty group "${selectedGroupDetails.name}"?`)) {
+                        fbDeleteGroup(selectedGroupDetails.id);
+                        setGroups(prev => prev.filter(g => g.id !== selectedGroupDetails.id));
+                        setSelectedGroupDetails(null);
+                      }
+                    }}
+                    className="px-6 py-2.5 bg-rose-50 text-rose-600 border border-rose-100 rounded-2xl text-xs font-black hover:bg-rose-100 transition-all flex items-center gap-2 mx-auto"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    Delete Empty Group
+                  </button>
                 </div>
               )}
             </div>
 
             {availableGroups.length > 0 && groupStudents.length > 0 && (
-              <div className="mt-8 p-4 bg-indigo-50/50 border border-indigo-100 rounded-2xl flex items-center justify-between">
-                <div>
-                  <p className="text-xs font-bold text-indigo-900">Bulk Group Migration</p>
-                  <p className="text-[10px] text-indigo-600">Move all {groupStudents.length} students to another group.</p>
+              <div className="mt-8 space-y-3">
+                {isGenericSheet && groupStudents.some(s => s.ibLevel) && (
+                  <button
+                    onClick={moveByLevel}
+                    className="w-full p-4 bg-violet-50 border border-violet-100 rounded-2xl flex items-center justify-between hover:bg-violet-100 transition-all group"
+                  >
+                    <div className="text-left">
+                      <p className="text-xs font-bold text-violet-900">Auto-Migrate by HL/SL Level</p>
+                      <p className="text-[10px] text-violet-600">Move students based on their HL/SL settings into matching groups.</p>
+                    </div>
+                    <ArrowRight className="w-5 h-5 text-violet-400 group-hover:translate-x-1 transition-transform" />
+                  </button>
+                )}
+
+                <div className="p-4 bg-indigo-50/50 border border-indigo-100 rounded-2xl flex items-center justify-between">
+                  <div>
+                    <p className="text-xs font-bold text-indigo-900">Bulk Group Migration</p>
+                    <p className="text-[10px] text-indigo-600">Move all {groupStudents.length} students to another group.</p>
+                  </div>
+                  <select
+                    onChange={(e) => {
+                      const targetGroupId = e.target.value;
+                      if (targetGroupId) {
+                        moveAllStudentsToGroup(selectedGroupDetails.name, targetGroupId);
+                      }
+                    }}
+                    className="text-[10px] bg-white border border-indigo-200 rounded-lg px-3 py-1.5 outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-indigo-600"
+                    value=""
+                  >
+                    <option value="">Move Everyone to...</option>
+                    {availableGroups.sort((a, b) => b.academicYear.localeCompare(a.academicYear)).map(g => (
+                      <option key={g.id} value={g.id}>{g.name} ({g.academicYear})</option>
+                    ))}
+                  </select>
                 </div>
-                <select
-                  onChange={(e) => {
-                    const targetGroup = e.target.value;
-                    if (targetGroup) {
-                      moveAllStudentsToGroup(selectedGroupDetails.name, targetGroup);
-                    }
-                  }}
-                  className="text-[10px] bg-white border border-indigo-200 rounded-lg px-3 py-1.5 outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-indigo-600"
-                  value=""
-                >
-                  <option value="">Move Everyone to...</option>
-                  {availableGroups.map(g => (
-                    <option key={g.id} value={g.name}>{g.name}</option>
-                  ))}
-                </select>
               </div>
             )}
           </div>
@@ -2261,44 +2342,107 @@ export default function App() {
     });
   };
 
-  const moveStudentToGroup = async (studentId: string, newGroupName: string) => {
-    if (!confirm(`Move student to ${newGroupName}?`)) return;
+  const moveStudentToGroup = async (studentId: string, targetGroupId: string) => {
+    const targetGroup = groups.find(g => g.id === targetGroupId);
+    if (!targetGroup) return;
+
+    if (!confirm(`Move student to ${targetGroup.name} (${targetGroup.academicYear})?`)) return;
     try {
       setSaveStatus('saving');
-      await fbUpdateStudent(studentId, { groupName: newGroupName });
-      setStudents(prev => prev.map(s => s.id === studentId ? { ...s, groupName: newGroupName } : s));
+      
+      const updateData: any = { 
+        groupName: targetGroup.name,
+        academicYear: targetGroup.academicYear,
+        yearGroup: targetGroup.yearGroup 
+      };
+      
+      console.log(`Moving student ${studentId} to group ${targetGroup.name}`, updateData);
+      
+      await fbUpdateStudent(studentId, updateData);
+      
+      // Update local state
+      setStudents(prev => prev.map(s => s.id === studentId ? { ...s, ...updateData } : s));
+      
       setSaveStatus('saved');
+      alert(`Moved successfully to ${targetGroup.name}`);
       setTimeout(() => setSaveStatus('idle'), 3000);
+      
+      // Check for duplicates after move
+      const targetStudent = students.find(s => s.id === studentId);
+      if (targetStudent) {
+        const potentialDuplicates = students.filter(s => 
+          s.id !== studentId && 
+          s.name.toLowerCase().trim() === targetStudent.name.toLowerCase().trim() &&
+          s.groupName === targetGroup.name &&
+          s.academicYear === targetGroup.academicYear
+        );
+        if (potentialDuplicates.length > 0) {
+          if (confirm(`A student named "${targetStudent.name}" already exists in ${targetGroup.name}. Consolidate their records now? This will merge marks if possible.`)) {
+            consolidateStudents();
+          }
+        }
+      }
     } catch (error) {
-      console.error(error);
+      console.error("Move error:", error);
       setSaveStatus('idle');
+      alert(`Error moving student: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
-  const moveAllStudentsToGroup = async (sourceGroupName: string, destGroupName: string) => {
-    if (!confirm(`Move ALL students from ${sourceGroupName} to ${destGroupName}?`)) return;
+  const moveAllStudentsToGroup = async (sourceGroupName: string, targetGroupId: string) => {
+    const targetGroup = groups.find(g => g.id === targetGroupId);
+    if (!targetGroup) return;
+
+    if (!confirm(`Move ALL students from ${sourceGroupName} to ${targetGroup.name} (${targetGroup.academicYear})?`)) return;
     try {
       setSaveStatus('saving');
+      const targetYear = selectedGroupDetails?.academicYear || selectedAcademicYear;
+      
       const studentsToMove = students.filter(s => 
         s.groupName === sourceGroupName && 
-        s.academicYear === selectedAcademicYear
+        s.academicYear === targetYear
       );
       
-      const updatePromises = studentsToMove.map(s => fbUpdateStudent(s.id, { groupName: destGroupName }));
+      if (studentsToMove.length === 0) {
+        alert("No students found to move.");
+        setSaveStatus('idle');
+        return;
+      }
+
+      const updateData: any = { 
+        groupName: targetGroup.name,
+        academicYear: targetGroup.academicYear,
+        yearGroup: targetGroup.yearGroup 
+      };
+
+      const updatePromises = studentsToMove.map(s => fbUpdateStudent(s.id, updateData));
       await Promise.all(updatePromises);
       
       setStudents(prev => prev.map(s => 
-        (s.groupName === sourceGroupName && s.academicYear === selectedAcademicYear)
-          ? { ...s, groupName: destGroupName }
+        (s.groupName === sourceGroupName && s.academicYear === targetYear)
+          ? { ...s, ...updateData }
           : s
       ));
       
       setSaveStatus('saved');
+      alert(`Successfully moved ${studentsToMove.length} students to ${targetGroup.name}.`);
       setTimeout(() => setSaveStatus('idle'), 3000);
+
+      const sourceGroup = groups.find(g => g.name === sourceGroupName && g.academicYear === targetYear);
+      if (sourceGroup && confirm(`Move completed. The group "${sourceGroupName}" is now empty. Delete it?`)) {
+        await fbDeleteGroup(sourceGroup.id);
+        setGroups(prev => prev.filter(g => g.id !== sourceGroup.id));
+      }
+      
+      if (confirm("Move complete. Would you like to scan for and merge any duplicate names in the target group?")) {
+        consolidateStudents();
+      }
+      
       setSelectedGroupDetails(null); 
     } catch (error) {
       console.error(error);
       setSaveStatus('idle');
+      alert(`Error moving students: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
