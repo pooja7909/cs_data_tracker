@@ -200,11 +200,7 @@ export default function App() {
     '10 IGCSE': [...IGCSE_BOUNDARIES],
     '11 IGCSE': [...IGCSE_BOUNDARIES],
     '12 IB': [...IB_BOUNDARIES],
-    '12 IB HL': [...IB_BOUNDARIES],
-    '12 IB SL': [...IB_BOUNDARIES],
     '13 IB': [...IB_BOUNDARIES],
-    '13 IB HL': [...IB_BOUNDARIES],
-    '13 IB SL': [...IB_BOUNDARIES],
   });
   const [lockedYearBoundaries, setLockedYearBoundaries] = useState<Record<string, boolean>>(() => {
     try {
@@ -367,20 +363,48 @@ export default function App() {
     return mapping[cleanGrade] || 0;
   };
 
-  const getStudentBoundaries = (student: Student) => {
-    let boundaryKey = String(student.yearGroup);
-    if (String(student.yearGroup).includes('IB')) {
-      if (student.ibLevel) {
-        boundaryKey = `${student.yearGroup} ${student.ibLevel}`;
-      }
+  const getStudentBoundaries = (student: Student, assessment?: Assessment) => {
+    // 1. Priority: Assessment Specific Boundaries
+    if (assessment?.boundaries && assessment.boundaries.length > 0) {
+      return assessment.boundaries;
     }
-    return yearBoundaries[student.groupName] || yearBoundaries[boundaryKey] || yearBoundaries[String(student.yearGroup)] || (
-      String(student.yearGroup).includes('IGCSE') ? IGCSE_BOUNDARIES :
-      String(student.yearGroup).includes('IB') ? IB_BOUNDARIES : KS3_BOUNDARIES
-    );
+
+    const yearKey = String(student.yearGroup);
+    
+    // Normalize keys for lookup (removing extra spaces)
+    const normalizedGroupName = student.groupName?.trim();
+    const normalizedYearKey = yearKey.trim();
+    const yStr = normalizedYearKey.toUpperCase();
+    
+    // 2. Resolve Level Key (e.g. "12 IB HL")
+    let levelKey = '';
+    if ((yStr.includes('IB') || normalizedYearKey.startsWith('12') || normalizedYearKey.startsWith('13')) && student.ibLevel) {
+      levelKey = `${normalizedYearKey.includes('IB') ? normalizedYearKey : normalizedYearKey + ' IB'} ${student.ibLevel}`;
+    }
+
+    // 3. Fallback logic: Group Name -> Level Key -> Year Group Key
+    // We check both spaced and non-spaced versions for robustness
+    const boundaries = yearBoundaries[normalizedGroupName] || 
+                      (levelKey && yearBoundaries[levelKey]) || 
+                      yearBoundaries[normalizedYearKey] ||
+                      yearBoundaries[normalizedYearKey.includes('IB') ? normalizedYearKey : normalizedYearKey + ' IB'] ||
+                      yearBoundaries[normalizedYearKey.includes('IGCSE') ? normalizedYearKey : normalizedYearKey + ' IGCSE'] ||
+                      yearBoundaries[normalizedGroupName.replace(/\s+/g, '')] ||
+                      yearBoundaries[normalizedYearKey.replace(/\s+/g, '')] ||
+                      // Handle "12IB" vs "12 IB" specifically
+                      (normalizedYearKey.startsWith('12') ? (yearBoundaries['12 IB'] || yearBoundaries['12 IB HL']) : null) ||
+                      (normalizedYearKey.startsWith('13') ? (yearBoundaries['13 IB'] || yearBoundaries['13 IB HL']) : null);
+
+    if (boundaries && boundaries.length > 0) return boundaries;
+
+    // 4. Final Defaults based on year group name or number
+    if (yStr.includes('IGCSE') || normalizedYearKey === '10' || normalizedYearKey === '11') return IGCSE_BOUNDARIES;
+    if (yStr.includes('IB') || normalizedYearKey === '12' || normalizedYearKey === '13') return IB_BOUNDARIES;
+    return KS3_BOUNDARIES;
   };
 
   const getGrade = (percentage: number, boundaries: GradeBoundary[]) => {
+    if (!boundaries || boundaries.length === 0) return 'U';
     const sorted = [...boundaries].sort((a, b) => b.minPercentage - a.minPercentage);
     for (const b of sorted) {
       if (percentage >= b.minPercentage) return b.grade;
@@ -832,26 +856,48 @@ export default function App() {
     const currentYearAssessments = assessments.filter(a => a.academicYear === selectedAcademicYear);
 
     return currentYearStudents.map(student => {
-      // Find previous year record for this student if in 11 IGCSE or 13 IB
+      // Find previous year records and marks for this student
       // This fulfills the requirement: "year 10 moves to year 11, year 12 to year 13 along with all their data"
       let priorMarks: (Mark & { assessment: Assessment })[] = [];
-      if (student.yearGroup === '11 IGCSE' || student.yearGroup === '13 IB' || student.yearGroup === 'Graduated') {
-        const prevYear = getPreviousAcademicYear(selectedAcademicYear);
+      
+      const prevYear = getPreviousAcademicYear(selectedAcademicYear);
+      const isProgressionYear = student.yearGroup === '11 IGCSE' || student.yearGroup === '13 IB' || student.yearGroup === 'Graduated' || student.yearGroup === '12 IB';
+      
+      if (prevYear && isProgressionYear) {
         const prevYearGroup = student.yearGroup === '11 IGCSE' ? '10 IGCSE' : 
-                             student.yearGroup === '13 IB' ? '12 IB' : '13 IB';
-        if (prevYear) {
-          const prevStudent = students.find(s => s.name === student.name && s.yearGroup === prevYearGroup && s.academicYear === prevYear);
-          if (prevStudent) {
-            const prevAssessments = assessments.filter(a => a.academicYear === prevYear && a.yearGroup === prevYearGroup);
-            priorMarks = marks
-              .filter(m => m.studentId === prevStudent.id)
-              .map(m => ({
-                ...m,
-                assessment: prevAssessments.find(a => a.id === m.id || a.id === m.assessmentId)!
-              }))
-              .filter(m => m.assessment);
-          }
+                             student.yearGroup === '13 IB' ? '12 IB' : 
+                             student.yearGroup === '12 IB' ? '11 IGCSE' : '13 IB';
+        
+        // Lookup marks from a different student record with same name
+        const prevStudent = students.find(s => s.name === student.name && s.yearGroup === prevYearGroup && s.academicYear === prevYear);
+        if (prevStudent) {
+          const prevAssessments = assessments.filter(a => a.academicYear === prevYear && a.yearGroup === prevYearGroup);
+          priorMarks = marks
+            .filter(m => m.studentId === prevStudent.id)
+            .map(m => ({
+              ...m,
+              assessment: prevAssessments.find(a => a.id === m.assessmentId)!
+            }))
+            .filter(m => m.assessment);
         }
+        
+        // ALSO: Check marks for THIS student ID that belong to the previous year group assessments
+        // (This handles cases where the student was "Moved" to the new year but their old marks are still there)
+        const historicMarks = marks
+          .filter(m => m.studentId === student.id)
+          .map(m => ({
+            ...m,
+            assessment: assessments.find(a => (a.id === m.assessmentId || a.id === m.id) && a.academicYear === prevYear)!
+          }))
+          .filter(m => m.assessment && m.assessment.academicYear === prevYear);
+        
+        // Merge without duplicates
+        const existingMarkIds = new Set(priorMarks.map(m => m.id));
+        historicMarks.forEach(hm => {
+          if (!existingMarkIds.has(hm.id)) {
+            priorMarks.push(hm);
+          }
+        });
       }
 
       const studentMarks = [
@@ -875,7 +921,7 @@ export default function App() {
       // Calculate Average Points
       const marksWithPoints = sittingMarks.map(m => {
         const effPerc = getMarkPercentage(m, m.assessment);
-        const boundaries = getStudentBoundaries(student);
+        const boundaries = getStudentBoundaries(student, m.assessment);
         const grade = getGrade(effPerc, boundaries);
         return gradeToPoints(grade);
       });
@@ -1235,7 +1281,7 @@ export default function App() {
             row.push('ABS', 'ABS', 'ABS', 'ABS');
           } else {
             const effPerc = getMarkPercentage(mark, a);
-            const grade = getGrade(effPerc, a.boundaries || getStudentBoundaries(p.student));
+            const grade = getGrade(effPerc, getStudentBoundaries(p.student, a));
             const points = gradeToPoints(grade);
             row.push(mark.score, effPerc.toFixed(1) + '%', grade, points);
           }
@@ -5108,7 +5154,7 @@ export default function App() {
                                   };
 
                                   const percentage = getMarkPerc(mark);
-                                  const grade = getGrade(percentage, a.boundaries || yearBoundaries[p.student.yearGroup] || []);
+                                  const grade = getGrade(percentage, getStudentBoundaries(p.student, a));
                                   const points = gradeToPoints(grade);
                                   
                                   return (
@@ -5689,7 +5735,7 @@ export default function App() {
                                   const resitPerc = (m.resitScore !== undefined && m.resitScore !== null) ? (m.resitScore / (m.resitMaxMarks || m.assessment.maxMarks) * 100) : null;
                                   const percentage = resitPerc !== null ? (basePerc + resitPerc) / 2 : basePerc;
                                   
-                                  const currentBoundaries = m.assessment.boundaries || yearBoundaries[p.student.yearGroup] || [];
+                                  const currentBoundaries = getStudentBoundaries(p.student, m.assessment);
                                   const grade = getGrade(percentage, currentBoundaries);
                                   
                                   return (
