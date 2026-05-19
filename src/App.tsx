@@ -369,37 +369,41 @@ export default function App() {
       return assessment.boundaries;
     }
 
-    const yearKey = String(student.yearGroup);
+    const yearKey = String(student.yearGroup || '').trim();
+    const groupName = (student.groupName || '').trim();
     
-    // Normalize keys for lookup (removing extra spaces)
-    const normalizedGroupName = student.groupName?.trim();
-    const normalizedYearKey = yearKey.trim();
-    const yStr = normalizedYearKey.toUpperCase();
+    // Normalize logic for determining IB vs IGCSE vs KS3
+    const isIB = yearKey.includes('IB') || groupName.includes('IB') || yearKey === '12' || yearKey === '13';
+    const isIGCSE = yearKey.includes('IGCSE') || groupName.includes('IGCSE') || yearKey === '10' || yearKey === '11';
     
-    // 2. Resolve Level Key (e.g. "12 IB HL")
-    let levelKey = '';
-    if ((yStr.includes('IB') || normalizedYearKey.startsWith('12') || normalizedYearKey.startsWith('13')) && student.ibLevel) {
-      levelKey = `${normalizedYearKey.includes('IB') ? normalizedYearKey : normalizedYearKey + ' IB'} ${student.ibLevel}`;
+    // 2. Resolve lookup keys in order of specificity
+    const lookupKeys = [
+      groupName, // Specific class group
+      isIB ? (yearKey.includes('IB') ? yearKey : yearKey + ' IB') : null, // Year-specific curriculum (e.g. "12 IB")
+      isIGCSE ? (yearKey.includes('IGCSE') ? yearKey : yearKey + ' IGCSE') : null, // (e.g. "11 IGCSE")
+      yearKey, // Raw year group number/string
+      groupName.replace(/\s+/g, ''), // No-space versions
+      yearKey.replace(/\s+/g, ''),
+    ].filter(Boolean) as string[];
+
+    // Level-specific IB keys (HL/SL)
+    if (isIB && student.ibLevel) {
+      const levelPrefix = yearKey.includes('IB') ? yearKey : yearKey + ' IB';
+      lookupKeys.unshift(`${levelPrefix} ${student.ibLevel}`);
+      // Fallback for "12 IB HL" style
+      if (yearKey.startsWith('12')) lookupKeys.push(`12 IB ${student.ibLevel}`);
+      if (yearKey.startsWith('13')) lookupKeys.push(`13 IB ${student.ibLevel}`);
     }
 
-    // 3. Fallback logic: Group Name -> Level Key -> Year Group Key
-    // We check both spaced and non-spaced versions for robustness
-    const boundaries = yearBoundaries[normalizedGroupName] || 
-                      (levelKey && yearBoundaries[levelKey]) || 
-                      yearBoundaries[normalizedYearKey] ||
-                      yearBoundaries[normalizedYearKey.includes('IB') ? normalizedYearKey : normalizedYearKey + ' IB'] ||
-                      yearBoundaries[normalizedYearKey.includes('IGCSE') ? normalizedYearKey : normalizedYearKey + ' IGCSE'] ||
-                      yearBoundaries[normalizedGroupName.replace(/\s+/g, '')] ||
-                      yearBoundaries[normalizedYearKey.replace(/\s+/g, '')] ||
-                      // Handle "12IB" vs "12 IB" specifically
-                      (normalizedYearKey.startsWith('12') ? (yearBoundaries['12 IB'] || yearBoundaries['12 IB HL']) : null) ||
-                      (normalizedYearKey.startsWith('13') ? (yearBoundaries['13 IB'] || yearBoundaries['13 IB HL']) : null);
+    // Try finding in yearBoundaries
+    for (const key of lookupKeys) {
+      const b = yearBoundaries[key];
+      if (b && b.length > 0) return b;
+    }
 
-    if (boundaries && boundaries.length > 0) return boundaries;
-
-    // 4. Final Defaults based on year group name or number
-    if (yStr.includes('IGCSE') || normalizedYearKey === '10' || normalizedYearKey === '11') return IGCSE_BOUNDARIES;
-    if (yStr.includes('IB') || normalizedYearKey === '12' || normalizedYearKey === '13') return IB_BOUNDARIES;
+    // 3. Fallback to global defaults if no custom boundaries found
+    if (isIGCSE) return IGCSE_BOUNDARIES;
+    if (isIB) return IB_BOUNDARIES;
     return KS3_BOUNDARIES;
   };
 
@@ -939,14 +943,7 @@ export default function App() {
       // Status: only meaningful if student has sat at least 1 assessment
       let status: 'excellent' | 'on-track' | 'needs-improvement' | 'no-data' = averagePercentage === null ? 'no-data' : 'on-track';
       if (averagePercentage !== null) {
-        let boundaryKey = String(student.yearGroup);
-        if (String(student.yearGroup).includes('IB')) {
-          if (student.ibLevel) {
-            boundaryKey = `${student.yearGroup} ${student.ibLevel}`;
-          }
-          // If the specific HL/SL key isn't in yearBoundaries yet, the fallback to yearGroup key below remains valid
-        }
-        const currentBoundaries = yearBoundaries[student.groupName] || yearBoundaries[boundaryKey] || yearBoundaries[String(student.yearGroup)] || [];
+        const currentBoundaries = getStudentBoundaries(student);
         const sortedBoundaries = [...currentBoundaries].sort((a, b) => b.minPercentage - a.minPercentage);
         const topBoundary = sortedBoundaries[0]?.minPercentage || 80;
         
