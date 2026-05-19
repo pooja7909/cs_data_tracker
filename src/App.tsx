@@ -369,35 +369,50 @@ export default function App() {
       return assessment.boundaries;
     }
 
-    const yearKey = String(student.yearGroup || '').trim();
+    const yearKeyRaw = String(student.yearGroup || '').trim();
     const groupName = (student.groupName || '').trim();
     
     // Normalize logic for determining IB vs IGCSE vs KS3
-    const isIB = yearKey.includes('IB') || groupName.includes('IB') || yearKey === '12' || yearKey === '13';
-    const isIGCSE = yearKey.includes('IGCSE') || groupName.includes('IGCSE') || yearKey === '10' || yearKey === '11';
+    const isIB = yearKeyRaw.toUpperCase().includes('IB') || groupName.toUpperCase().includes('IB') || yearKeyRaw.startsWith('12') || yearKeyRaw.startsWith('13');
+    const isIGCSE = yearKeyRaw.toUpperCase().includes('IGCSE') || groupName.toUpperCase().includes('IGCSE') || yearKeyRaw.startsWith('10') || yearKeyRaw.startsWith('11');
     
+    // Normalize yearKey: "12IB" -> "12 IB", "11IGCSE" -> "11 IGCSE"
+    const yearKey = yearKeyRaw.replace(/^(\d+)([a-zA-Z]+)$/, '$1 $2');
+    
+    // Helper to find a key in yearBoundaries with normalization
+    const findInYearBoundaries = (queryKey: string | null) => {
+      if (!queryKey) return null;
+      // Exact match
+      if (yearBoundaries[queryKey]) return yearBoundaries[queryKey];
+      // Normalize both: remove spaces and lowercase
+      const norm = (s: string) => s.toLowerCase().replace(/\s+/g, '');
+      const queryNorm = norm(queryKey);
+      const matchedKey = Object.keys(yearBoundaries).find(k => norm(k) === queryNorm);
+      return matchedKey ? yearBoundaries[matchedKey] : null;
+    };
+
     // 2. Resolve lookup keys in order of specificity
-    const lookupKeys = [
-      groupName, // Specific class group
-      isIB ? (yearKey.includes('IB') ? yearKey : yearKey + ' IB') : null, // Year-specific curriculum (e.g. "12 IB")
-      isIGCSE ? (yearKey.includes('IGCSE') ? yearKey : yearKey + ' IGCSE') : null, // (e.g. "11 IGCSE")
-      yearKey, // Raw year group number/string
-      groupName.replace(/\s+/g, ''), // No-space versions
-      yearKey.replace(/\s+/g, ''),
-    ].filter(Boolean) as string[];
+    const lookupPriorities = [
+      groupName, // e.g. "12C"
+    ];
 
     // Level-specific IB keys (HL/SL)
     if (isIB && student.ibLevel) {
       const levelPrefix = yearKey.includes('IB') ? yearKey : yearKey + ' IB';
-      lookupKeys.unshift(`${levelPrefix} ${student.ibLevel}`);
-      // Fallback for "12 IB HL" style
-      if (yearKey.startsWith('12')) lookupKeys.push(`12 IB ${student.ibLevel}`);
-      if (yearKey.startsWith('13')) lookupKeys.push(`13 IB ${student.ibLevel}`);
+      lookupPriorities.push(`${levelPrefix} ${student.ibLevel}`);
+      lookupPriorities.push(`${yearKeyRaw} ${student.ibLevel}`);
+      if (yearKey.startsWith('12')) lookupPriorities.push(`12 IB ${student.ibLevel}`);
+      if (yearKey.startsWith('13')) lookupPriorities.push(`13 IB ${student.ibLevel}`);
     }
 
-    // Try finding in yearBoundaries
-    for (const key of lookupKeys) {
-      const b = yearBoundaries[key];
+    // Standard year group keys
+    lookupPriorities.push(isIB ? (yearKey.includes('IB') ? yearKey : yearKey + ' IB') : null);
+    lookupPriorities.push(isIGCSE ? (yearKey.includes('IGCSE') ? yearKey : yearKey + ' IGCSE') : null);
+    lookupPriorities.push(yearKey);
+    lookupPriorities.push(yearKeyRaw);
+
+    for (const key of lookupPriorities) {
+      const b = findInYearBoundaries(key);
       if (b && b.length > 0) return b;
     }
 
@@ -4996,7 +5011,7 @@ export default function App() {
                             <th 
                               className="py-3 px-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest text-center border-r border-slate-200"
                             >
-                              Base
+                              Baseline
                             </th>
                             <th 
                               className="py-3 px-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest text-center border-r border-slate-200 cursor-pointer hover:bg-slate-100 transition-colors"
@@ -5056,7 +5071,7 @@ export default function App() {
                                         )}
                                       </div>
                                       <div className="flex items-center gap-1">
-                                        <span className="text-[9px] font-bold text-indigo-500">{p.student.baselineGrade || 'BL?'}</span>
+                                        <span className="text-[9px] font-bold text-indigo-500">{p.student.baselineGrade ? `Baseline ${p.student.baselineGrade}` : 'No Baseline'}</span>
                                         <span className="text-[9px] text-slate-300">|</span>
                                         <span className="text-[9px] text-slate-400 truncate">{p.student.groupName}</span>
                                       </div>
