@@ -82,7 +82,15 @@ import {
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
-const normYear = (s: string | number | undefined) => String(s || '').toLowerCase().replace(/\s+/g, '').trim();
+const normYear = (s: string | number | undefined) => {
+  let str = String(s || '').toLowerCase().replace(/\s+/g, '').trim();
+  // Strip sl/hl suffixes from IB years for broader matching
+  // (e.g. "12 IB SL" should match "12 IB" in terms of year group)
+  if (str.includes('ib')) {
+    str = str.replace(/(sl|hl)$/, '');
+  }
+  return str;
+};
 
 const SUBJECTS_BY_YEAR: Record<YearGroup, string[]> = {
   7: ['Computer Science'],
@@ -882,7 +890,9 @@ export default function App() {
 
   // Derived Data
   const performances = useMemo(() => {
-    const currentYearStudents = students.filter(s => s.academicYear === selectedAcademicYear);
+    const rawStudents = students.filter(s => s.academicYear === selectedAcademicYear);
+    
+    const currentYearStudents = rawStudents;
     const currentYearAssessments = assessments.filter(a => a.academicYear === selectedAcademicYear);
 
     return currentYearStudents.map(student => {
@@ -938,7 +948,12 @@ export default function App() {
             ...m,
             assessment: currentYearAssessments.find(a => a.id === m.assessmentId)!
           }))
-          .filter(m => m.assessment && (!m.assessment.ibLevel || m.assessment.ibLevel === 'Both' || m.assessment.ibLevel === student.ibLevel))
+          .filter(m => {
+            if (!m.assessment) return false;
+            const levelMatch = !m.assessment.ibLevel || m.assessment.ibLevel === 'Both' || m.assessment.ibLevel === student.ibLevel;
+            const assessmentMatch = performanceAssessmentFilter === 'all' || m.assessmentId === performanceAssessmentFilter;
+            return levelMatch && assessmentMatch;
+          })
       ].sort((a, b) => new Date(a.assessment.date).getTime() - new Date(b.assessment.date).getTime());
 
       // Only include marks where the student actually sat the assessment (not absent)
@@ -1017,11 +1032,12 @@ export default function App() {
         baselinePoints
       } as any as StudentPerformance;
     });
-  }, [students, assessments, marks, selectedAcademicYear, yearBoundaries, performanceSubjectFilter]);
+  }, [students, assessments, marks, selectedAcademicYear, yearBoundaries, performanceSubjectFilter, performanceAssessmentFilter]);
 
   const filteredPerformances = useMemo(() => {
     return performances.filter(p => {
-      const matchesSearch = p.student.name.toLowerCase().includes(marksheetSearchQuery.toLowerCase());
+      const activeSearch = searchQuery || marksheetSearchQuery;
+      const matchesSearch = p.student.name.toLowerCase().includes(activeSearch.toLowerCase());
       const matchesYear = matchesYearFilter(p.student.yearGroup, yearFilter);
       const matchesGroup = marksheetGroupFilter === 'all' || p.student.groupName === marksheetGroupFilter;
       // Subject filter logic:
@@ -1037,7 +1053,7 @@ export default function App() {
       const matchesLevel = ibLevelFilter === 'all' || p.student.ibLevel === ibLevelFilter;
       return matchesSearch && matchesYear && matchesGroup && matchesSubject && matchesLevel;
     });
-  }, [performances, marksheetSearchQuery, yearFilter, performanceSubjectFilter, marksheetGroupFilter, ibLevelFilter]);
+  }, [performances, marksheetSearchQuery, searchQuery, yearFilter, performanceSubjectFilter, marksheetGroupFilter, ibLevelFilter]);
 
   const sortedMarksheetPerformances = useMemo(() => {
     return [...filteredPerformances].sort((a, b) => {
@@ -4552,12 +4568,27 @@ export default function App() {
                       onChange={(e) => setSelectedStudentForPerformance(e.target.value)}
                     >
                       <option value="none">Select Student...</option>
-                      {students
-                        .filter(s => s.academicYear === selectedAcademicYear && matchesYearFilter(s.yearGroup, yearFilter))
-                        .sort((a, b) => a.name.localeCompare(b.name))
-                        .map(s => (
+                      {(() => {
+                        const raw = students
+                          .filter(s => s.academicYear === selectedAcademicYear && matchesYearFilter(s.yearGroup, yearFilter));
+                        const unique: Student[] = [];
+                        const seen = new Set<string>();
+                        const sorted = [...raw].sort((a,b) => {
+                          if (a.groupName && !b.groupName) return -1;
+                          if (!a.groupName && b.groupName) return 1;
+                          return 0;
+                        });
+                        for (const s of sorted) {
+                          const key = `${s.name.trim().toLowerCase()}|${normYear(s.yearGroup)}`;
+                          if (!seen.has(key)) {
+                            unique.push(s);
+                            seen.add(key);
+                          }
+                        }
+                        return unique.sort((a,b) => a.name.localeCompare(b.name)).map(s => (
                           <option key={s.id} value={s.id}>{s.name}</option>
-                        ))}
+                        ));
+                      })()}
                     </select>
                   </div>
                   <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-xl border border-slate-200 shadow-sm">
@@ -5383,9 +5414,14 @@ export default function App() {
                       .map(year => {
                         const yearStudents = filteredPerformances.filter(p => normYear(p.student.yearGroup) === normYear(year));
                         // Only show groups that have actual students (prevents ghost/deleted groups)
-                        const yearGroups = (Array.from(new Set(yearStudents.map(p => p.student.groupName))).filter(Boolean) as string[]).sort((a, b) => a.localeCompare(b));
+                        // Include empty groupName to show unassigned students
+                        const yearGroups = Array.from(new Set(yearStudents.map(p => p.student.groupName || ''))).sort((a: string, b: string) => {
+                          if (a === '') return -1;
+                          if (b === '') return 1;
+                          return a.localeCompare(b);
+                        });
                         
-                        if (yearGroups.length === 0 && yearStudents.length === 0) return null;
+                        if (yearStudents.length === 0) return null;
                         
                         const yearSectionId = `year-${year}`;
                         const isYearExpanded = expandedSections.has(yearSectionId);
@@ -5423,9 +5459,14 @@ export default function App() {
                               (year === '12 IB' || year === '13 IB') ? (
                                 ['HL', 'SL'].map(level => {
                                   const levelStudentsFromYear = yearStudents.filter(p => p.student.ibLevel === level);
-                                  const levelGroups = (Array.from(new Set(levelStudentsFromYear.map(p => p.student.groupName))).filter(Boolean) as string[]).sort((a, b) => a.localeCompare(b));
+                                  // Include empty groupName to show unassigned students
+                                  const levelGroups = Array.from(new Set(levelStudentsFromYear.map(p => p.student.groupName || ''))).sort((a: string, b: string) => {
+                                    if (a === '') return -1;
+                                    if (b === '') return 1;
+                                    return a.localeCompare(b);
+                                  });
                                   
-                                  if (levelGroups.length === 0) return null;
+                                  if (levelStudentsFromYear.length === 0) return null;
 
                                   return (
                                     <div key={level} className="border-l-2 border-indigo-100 ml-2">
@@ -5435,21 +5476,21 @@ export default function App() {
                                       </div>
                                       {levelGroups.map(groupName => {
                                         const groupPerformance = levelStudentsFromYear
-                                          .filter(p => p.student.groupName === groupName)
+                                          .filter(p => (p.student.groupName || '') === groupName)
                                           .sort((a, b) => a.student.name.localeCompare(b.student.name));
                                         
-                                        const groupSectionId = `group-${year}-${level}-${groupName}`;
+                                        const groupSectionId = `group-${year}-${level}-${groupName || 'unassigned'}`;
                                         const isGroupExpanded = expandedSections.has(groupSectionId);
 
                                         return (
-                                          <div key={groupName} className="border-b border-slate-50 last:border-0 text-left">
+                                          <div key={groupName || 'unassigned'} className="border-b border-slate-50 last:border-0 text-left">
                                             <div 
                                               onClick={() => toggleSection(groupSectionId)}
                                               className="px-4 py-1.5 bg-white flex items-center justify-between group/header cursor-pointer hover:bg-indigo-50/20 transition-colors"
                                             >
                                               <div className="flex items-center gap-2">
                                                 {isGroupExpanded ? <ChevronDown className="w-2.5 h-2.5 text-indigo-300" /> : <ChevronRight className="w-2.5 h-2.5 text-indigo-300" />}
-                                                <h5 className="text-[9px] font-bold uppercase tracking-tighter text-indigo-400">Class {groupName}</h5>
+                                                <h5 className="text-[9px] font-bold uppercase tracking-tighter text-indigo-400">Class {groupName || 'Unassigned'}</h5>
                                               </div>
                                               <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
                                                 <button 
@@ -5526,20 +5567,20 @@ export default function App() {
                               ) : (
                                 yearGroups.map(groupName => {
                                   const groupStudents = yearStudents
-                                    .filter(p => p.student.groupName === groupName)
+                                    .filter(p => (p.student.groupName || '') === groupName)
                                     .sort((a, b) => a.student.name.localeCompare(b.student.name));
-                                  const groupSectionId = `group-${year}-${groupName}`;
+                                  const groupSectionId = `group-${year}-${groupName || 'unassigned'}`;
                                   const isGroupExpanded = expandedSections.has(groupSectionId);
 
                                   return (
-                                    <div key={groupName}>
+                                    <div key={groupName || 'unassigned'}>
                                       <div 
                                         onClick={() => toggleSection(groupSectionId)}
                                         className="px-4 py-1.5 bg-white flex items-center justify-between group/header cursor-pointer hover:bg-slate-50 transition-colors"
                                       >
                                         <div className="flex items-center gap-2">
                                           {isGroupExpanded ? <ChevronDown className="w-2.5 h-2.5 text-indigo-300" /> : <ChevronRight className="w-2.5 h-2.5 text-indigo-300" />}
-                                          <h5 className="text-[9px] font-bold uppercase tracking-tighter text-indigo-400">Class {groupName}</h5>
+                                          <h5 className="text-[9px] font-bold uppercase tracking-tighter text-indigo-400">Class {groupName || 'Unassigned'}</h5>
                                         </div>
                                         <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
                                           {groupStudents.length > 0 && (
@@ -5882,6 +5923,20 @@ export default function App() {
               <div className="flex items-center justify-between">
                 <h2 className="text-2xl font-bold text-slate-900">Assessments & Marks</h2>
                 <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-xl border border-slate-200 shadow-sm">
+                    <Filter className="w-4 h-4 text-slate-400" />
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Subject</span>
+                    <select 
+                      className="bg-transparent text-sm font-bold text-slate-700 outline-none cursor-pointer min-w-[120px]"
+                      value={performanceSubjectFilter}
+                      onChange={(e) => setPerformanceSubjectFilter(e.target.value)}
+                    >
+                      <option value="all">All Subjects</option>
+                      {availablePerformanceSubjects.map(s => (
+                        <option key={s} value={s}>{s}</option>
+                      ))}
+                    </select>
+                  </div>
                   <button 
                     onClick={() => {
                       const fileInput = document.getElementById('assessment-file-upload');
@@ -5947,9 +6002,32 @@ export default function App() {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {assessments
-                  .filter(a => a.academicYear === selectedAcademicYear && matchesYearFilter(a.yearGroup, yearFilter) && (performanceSubjectFilter === 'all' || a.subject === performanceSubjectFilter) && (ibLevelFilter === 'all' || !a.ibLevel || a.ibLevel === 'Both' || a.ibLevel === ibLevelFilter))
-                  .map(assessment => (
+                {(() => {
+                  const filteredAssessments = assessments.filter(a => 
+                    a.academicYear === selectedAcademicYear && 
+                    matchesYearFilter(a.yearGroup, yearFilter) && 
+                    (performanceSubjectFilter === 'all' || a.subject === performanceSubjectFilter) && 
+                    (ibLevelFilter === 'all' || !a.ibLevel || a.ibLevel === 'Both' || a.ibLevel === ibLevelFilter)
+                  );
+
+                  // De-duplicate assessments to prevent sync-duplicates from cluttering UI
+                  const uniqueAssessments: Assessment[] = [];
+                  const seenKeys = new Set<string>();
+                  
+                  // Sort by date descending first so we keep the most recent one if duplicates exist
+                  const sortedFiltered = [...filteredAssessments].sort((a, b) => 
+                    new Date(b.date).getTime() - new Date(a.date).getTime()
+                  );
+
+                  for (const a of sortedFiltered) {
+                    const key = `${a.name.trim().toLowerCase()}|${a.subject}|${normYear(a.yearGroup)}|${a.academicYear}|${a.ibLevel || 'Both'}`;
+                    if (!seenKeys.has(key)) {
+                      uniqueAssessments.push(a);
+                      seenKeys.add(key);
+                    }
+                  }
+
+                  return uniqueAssessments.map(assessment => (
                   <div key={assessment.id} className="card p-6 hover:border-indigo-200 transition-colors group">
                     <div className="flex justify-between items-start mb-4">
                       <div>
@@ -6016,10 +6094,22 @@ export default function App() {
                       });
 
                       // De-duplicate by name to handle 'replicating' data issues
+                      // Prefer students that have a group name or have a mark for this assessment
                       const currentYearStudents: Student[] = [];
                       const seenNames = new Set<string>();
-                      for (const s of unfilteredStudents) {
-                        const nameKey = s.name.toLowerCase();
+                      
+                      const sortedUnfiltered = [...unfilteredStudents].sort((a, b) => {
+                        const aHasMark = marks.some(m => m.studentId === a.id && m.assessmentId === assessment.id);
+                        const bHasMark = marks.some(m => m.studentId === b.id && m.assessmentId === assessment.id);
+                        if (aHasMark && !bHasMark) return -1;
+                        if (!aHasMark && bHasMark) return 1;
+                        if (a.groupName && !b.groupName) return -1;
+                        if (!a.groupName && b.groupName) return 1;
+                        return 0;
+                      });
+
+                      for (const s of sortedUnfiltered) {
+                        const nameKey = s.name.trim().toLowerCase();
                         if (!seenNames.has(nameKey)) {
                           currentYearStudents.push(s);
                           seenNames.add(nameKey);
@@ -6095,8 +6185,9 @@ export default function App() {
                       );
                     })()}
                   </div>
-                ))}
-              </div>
+                ))
+              })()}
+            </div>
             </motion.div>
           )}
 
@@ -7134,7 +7225,7 @@ export default function App() {
                             // Only show groups that actually have students (prevents ghost groups)
                             const fromStudents = students
                               .filter(s => assessment 
-                                ? (String(s.yearGroup) === String(assessment.yearGroup) && s.academicYear === selectedAcademicYear)
+                                ? (normYear(s.yearGroup) === normYear(assessment.yearGroup) && s.academicYear === selectedAcademicYear)
                                 : s.academicYear === selectedAcademicYear)
                               .map(s => s.groupName)
                               .filter(Boolean);
@@ -7182,27 +7273,14 @@ export default function App() {
                         return matchesYear && matchesAcademicYear && matchesGroup && matchesLevel;
                       });
 
-                      // De-duplicate by name if they are in the same year (normalized)
-                      // Prefer the one that has a group name
-                      const relevantStudents: Student[] = [];
-                      const seenNames = new Set<string>();
-                      
-                      // Sort to prefer those with groupName
-                      const sortedRaw = [...rawRelevant].sort((a, b) => {
-                        if (a.groupName && !b.groupName) return -1;
-                        if (!a.groupName && b.groupName) return 1;
-                        return 0;
+                      const relevantStudents = rawRelevant;
+                      const groupNames = Array.from(new Set(relevantStudents.map(s => s.groupName))).sort((a: any, b: any) => {
+                        const aVal = a || '';
+                        const bVal = b || '';
+                        if (aVal === '') return -1;
+                        if (bVal === '') return 1;
+                        return aVal.localeCompare(bVal);
                       });
-
-                      for (const s of sortedRaw) {
-                        const key = `${s.name.toLowerCase()}|${normYear(s.yearGroup)}`;
-                        if (!seenNames.has(key)) {
-                          relevantStudents.push(s);
-                          seenNames.add(key);
-                        }
-                      }
-
-                      const groupNames = Array.from(new Set(relevantStudents.map(s => s.groupName))).sort();
 
                       return groupNames.map(groupName => {
                         const groupStudents = relevantStudents
@@ -7256,6 +7334,19 @@ export default function App() {
                                       )}
                                     </div>
                                     <div className="flex items-center gap-1.5">
+                                      {/* Delete Student (for cleaning up duplicates) */}
+                                      <button
+                                        type="button"
+                                        title="Delete student record"
+                                        onClick={() => {
+                                          if (confirm(`Are you sure you want to delete ${student.name}? This will remove all their data.`)) {
+                                            handleDeleteStudent(student.id);
+                                          }
+                                        }}
+                                        className="p-1 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded transition-all"
+                                      >
+                                        <Trash2 className="w-3 h-3" />
+                                      </button>
                                       {/* Absent toggle */}
                                       <button
                                         type="button"
@@ -7640,7 +7731,11 @@ export default function App() {
                           >
                             <option value="all">All Groups</option>
                             {Array.from(new Set(students
-                              .filter(s => s.academicYear === selectedAcademicYear && s.yearGroup === assessments.find(a => a.id === showPaperGradingModal)?.yearGroup)
+                              .filter(s => {
+                                const assessment = assessments.find(a => a.id === showPaperGradingModal);
+                                if (!assessment) return false;
+                                return s.academicYear === selectedAcademicYear && normYear(s.yearGroup) === normYear(assessment.yearGroup);
+                              })
                               .map(s => s.groupName)
                             )).sort().map(g => (
                               <option key={g} value={g}>{g || 'Unassigned'}</option>
@@ -7710,7 +7805,7 @@ export default function App() {
                             });
 
                             for (const s of sortedRaw) {
-                              const key = `${s.name.toLowerCase()}|${normYear(s.yearGroup)}`;
+                              const key = `${s.name.trim().toLowerCase()}|${normYear(s.yearGroup)}`;
                               if (!seenNames.has(key)) {
                                 relevantStudents.push(s);
                                 seenNames.add(key);
