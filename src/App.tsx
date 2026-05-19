@@ -26,6 +26,7 @@ import {
   History,
   RefreshCw,
   Database,
+  ArrowRight,
   HelpCircle,
   Lock,
   Unlock,
@@ -1263,7 +1264,13 @@ export default function App() {
 
     const groupStudents = students.filter(s => 
       s.groupName === selectedGroupDetails.name && 
-      s.academicYear === selectedGroupDetails.academicYear
+      s.academicYear === selectedAcademicYear
+    );
+
+    const availableGroups = groups.filter(g => 
+      g.academicYear === selectedAcademicYear && 
+      g.id !== selectedGroupDetails.id &&
+      String(g.yearGroup) === String(selectedGroupDetails.yearGroup)
     );
 
     const groupPerformances = groupStudents.map(s => {
@@ -1353,9 +1360,48 @@ export default function App() {
                 <div key={perf.student.id} className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-100 group/item hover:border-indigo-200 transition-all">
                   <div className="flex items-center gap-3">
                     <span className="text-[10px] font-bold text-slate-300 w-4">{idx + 1}</span>
-                    <span className="text-sm font-bold text-slate-700">{perf.student.name}</span>
+                    <div className="flex flex-col">
+                      <span className="text-sm font-bold text-slate-700">{perf.student.name}</span>
+                      {String(selectedGroupDetails.yearGroup).includes('IB') && (
+                        <div className="flex gap-1 mt-1">
+                          {['HL', 'SL'].map(level => (
+                            <button
+                              key={level}
+                              onClick={() => {
+                                fbUpdateStudent(perf.student.id, { ibLevel: level as any });
+                                setStudents(prev => prev.map(s => s.id === perf.student.id ? { ...s, ibLevel: level as any } : s));
+                              }}
+                              className={`px-1.5 py-0.5 rounded text-[8px] font-black transition-all ${
+                                perf.student.ibLevel === level 
+                                  ? (level === 'HL' ? 'bg-violet-600 text-white' : 'bg-sky-600 text-white')
+                                  : 'bg-slate-200 text-slate-500 hover:bg-slate-300'
+                              }`}
+                            >
+                              {level}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
                   <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-2 pr-4 border-r border-slate-200">
+                      <select
+                        onChange={(e) => {
+                          const targetGroup = e.target.value;
+                          if (targetGroup) {
+                            moveStudentToGroup(perf.student.id, targetGroup);
+                          }
+                        }}
+                        className="text-[10px] bg-white border border-slate-200 rounded px-2 py-1 outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-slate-500"
+                        value=""
+                      >
+                        <option value="">Move to...</option>
+                        {availableGroups.map(g => (
+                          <option key={g.id} value={g.name}>{g.name}</option>
+                        ))}
+                      </select>
+                    </div>
                     <div className="text-right">
                       <p className="text-[11px] font-bold text-slate-900">{perf.hasData ? `${perf.avgPercentage.toFixed(1)}%` : '—'}</p>
                       <p className="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">Avg Score</p>
@@ -1373,6 +1419,30 @@ export default function App() {
                 </div>
               )}
             </div>
+
+            {availableGroups.length > 0 && groupStudents.length > 0 && (
+              <div className="mt-8 p-4 bg-indigo-50/50 border border-indigo-100 rounded-2xl flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-bold text-indigo-900">Bulk Group Migration</p>
+                  <p className="text-[10px] text-indigo-600">Move all {groupStudents.length} students to another group.</p>
+                </div>
+                <select
+                  onChange={(e) => {
+                    const targetGroup = e.target.value;
+                    if (targetGroup) {
+                      moveAllStudentsToGroup(selectedGroupDetails.name, targetGroup);
+                    }
+                  }}
+                  className="text-[10px] bg-white border border-indigo-200 rounded-lg px-3 py-1.5 outline-none focus:ring-2 focus:ring-indigo-500 font-bold text-indigo-600"
+                  value=""
+                >
+                  <option value="">Move Everyone to...</option>
+                  {availableGroups.map(g => (
+                    <option key={g.id} value={g.name}>{g.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
 
           <div className="p-6 border-t border-slate-100 bg-white flex flex-col gap-4">
@@ -2136,9 +2206,20 @@ export default function App() {
         }
       }
       
-      // Update local state to reflect changes (or just wait for sync if using subscriptions)
-      // Since we use useCloudSync, it should sync back automatically if those lists have subscriptions.
+      // Update local state to reflect changes
+      const allDuplicatesIds = tasks.flatMap(group => group.slice(1).map(s => s.id));
+      setStudents(prev => prev.filter(s => !allDuplicatesIds.includes(s.id)));
       
+      // Update marks too
+      setMarks(prev => prev.map(m => {
+        const foundGroup = tasks.find(group => group.some(s => s.id === m.studentId));
+        if (foundGroup) {
+          const master = foundGroup[0];
+          return { ...m, studentId: master.id, id: getMarkId(master.id, m.assessmentId) };
+        }
+        return m;
+      }));
+
       alert(`Successfully merged ${tasks.length} student groups.`);
       setSaveStatus('saved');
       setTimeout(() => setSaveStatus('idle'), 3000);
@@ -2178,6 +2259,47 @@ export default function App() {
         }
       }
     });
+  };
+
+  const moveStudentToGroup = async (studentId: string, newGroupName: string) => {
+    if (!confirm(`Move student to ${newGroupName}?`)) return;
+    try {
+      setSaveStatus('saving');
+      await fbUpdateStudent(studentId, { groupName: newGroupName });
+      setStudents(prev => prev.map(s => s.id === studentId ? { ...s, groupName: newGroupName } : s));
+      setSaveStatus('saved');
+      setTimeout(() => setSaveStatus('idle'), 3000);
+    } catch (error) {
+      console.error(error);
+      setSaveStatus('idle');
+    }
+  };
+
+  const moveAllStudentsToGroup = async (sourceGroupName: string, destGroupName: string) => {
+    if (!confirm(`Move ALL students from ${sourceGroupName} to ${destGroupName}?`)) return;
+    try {
+      setSaveStatus('saving');
+      const studentsToMove = students.filter(s => 
+        s.groupName === sourceGroupName && 
+        s.academicYear === selectedAcademicYear
+      );
+      
+      const updatePromises = studentsToMove.map(s => fbUpdateStudent(s.id, { groupName: destGroupName }));
+      await Promise.all(updatePromises);
+      
+      setStudents(prev => prev.map(s => 
+        (s.groupName === sourceGroupName && s.academicYear === selectedAcademicYear)
+          ? { ...s, groupName: destGroupName }
+          : s
+      ));
+      
+      setSaveStatus('saved');
+      setTimeout(() => setSaveStatus('idle'), 3000);
+      setSelectedGroupDetails(null); 
+    } catch (error) {
+      console.error(error);
+      setSaveStatus('idle');
+    }
   };
 
   const handleDeleteGroup = async (groupId: string) => {
@@ -4022,18 +4144,6 @@ export default function App() {
         </motion.div>
       )}
 
-          {activeTab === 'performance' && (
-            <motion.div 
-              key="performance"
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              exit={{ opacity: 0, x: -20 }}
-              className="space-y-6"
-            >
-              {/* ... existing performance code ... */}
-            </motion.div>
-          )}
-
           {activeTab === 'concerns' && (
             <motion.div 
               key="concerns"
@@ -4281,7 +4391,7 @@ export default function App() {
                     <div className="space-y-3">
                       {topPerformersList.length > 0 ? topPerformersList.map((p, idx) => (
                         <button 
-                          key={p.student.id} 
+                          key={`${p.student.id}-${idx}`} 
                           onClick={() => setSelectedStudentForPerformance(p.student.id)}
                           className={`w-full flex items-center justify-between p-2 rounded-lg transition-all hover:shadow-sm border border-transparent hover:border-slate-100 ${selectedStudentForPerformance === p.student.id ? 'bg-white shadow-sm border-slate-100' : 'hover:bg-white'}`}
                         >
@@ -4319,7 +4429,7 @@ export default function App() {
                     <div className="space-y-3">
                       {needsSupportList.length > 0 ? needsSupportList.map((p, idx) => (
                         <button 
-                          key={p.student.id} 
+                          key={`${p.student.id}-${idx}`} 
                           onClick={() => setSelectedStudentForPerformance(p.student.id)}
                           className={`w-full flex items-center justify-between p-2 rounded-lg transition-all hover:shadow-sm border border-transparent hover:border-slate-100 ${selectedStudentForPerformance === p.student.id ? 'bg-white shadow-sm border-slate-100' : 'hover:bg-white'}`}
                         >
@@ -5077,9 +5187,9 @@ export default function App() {
                                                 </button>
                                               </div>
                                             </div>
-                                            {isGroupExpanded && groupPerformance.map((p) => (
+                                            {isGroupExpanded && groupPerformance.map((p, idx) => (
                                               <div
-                                                key={p.student.id}
+                                                key={`${p.student.id}-${idx}`}
                                                 onClick={() => setSelectedStudentId(p.student.id)}
                                                 className={`w-full cursor-pointer px-3 py-1.5 transition-colors flex items-center justify-between group/student ${
                                                   selectedStudentId === p.student.id ? 'bg-indigo-50' : 'hover:bg-slate-50'
@@ -5173,9 +5283,9 @@ export default function App() {
                                           )}
                                         </div>
                                       </div>
-                                      {isGroupExpanded && groupStudents.map((p) => (
+                                      {isGroupExpanded && groupStudents.map((p, idx) => (
                                         <div
-                                          key={p.student.id}
+                                          key={`${p.student.id}-${idx}`}
                                           onClick={() => setSelectedStudentId(p.student.id)}
                                           className={`w-full cursor-pointer text-left px-3 py-1.5 transition-colors flex items-center justify-between group/student ${
                                             selectedStudentId === p.student.id ? 'bg-indigo-50' : 'hover:bg-slate-50'
@@ -5235,8 +5345,8 @@ export default function App() {
               <div className="lg:col-span-2">
                 {selectedStudentId ? (
                   <div className="space-y-6">
-                    {performances.filter(p => p.student.id === selectedStudentId).map(p => (
-                      <div key={p.student.id} className="space-y-6">
+                    {performances.filter(p => p.student.id === selectedStudentId).map((p, idx) => (
+                      <div key={`${p.student.id}-${idx}`} className="space-y-6">
                         <div className="card p-6">
                           <div className="flex items-center justify-between mb-8">
                             <div>
@@ -5325,6 +5435,56 @@ export default function App() {
                                   ))}
                                 </div>
                               )}
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+                            <div className="bg-slate-50 border border-slate-200 p-4 rounded-2xl">
+                              <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1.5 flex items-center gap-1.5">
+                                <Target className="w-3 h-3 text-indigo-500" />
+                                Baseline
+                              </p>
+                              <p className="text-2xl font-black text-slate-900 leading-none">{p.student.baselineGrade || 'Not set'}</p>
+                              <p className="text-[9px] text-slate-400 font-bold mt-1 uppercase tracking-tighter">Initial Target</p>
+                            </div>
+                            
+                            <div className="bg-indigo-50 border border-indigo-100 p-4 rounded-2xl">
+                              <p className="text-[10px] font-black text-indigo-500 uppercase tracking-widest mb-1.5 flex items-center gap-1.5">
+                                <TrendingUp className="w-3 h-3" />
+                                Current Avg
+                              </p>
+                              <div className="flex items-baseline gap-1.5">
+                                <p className="text-2xl font-black text-indigo-700 leading-none">
+                                  {p.averagePercentage.toFixed(0)}%
+                                </p>
+                                <p className="text-sm font-black text-indigo-500 leading-none">{getGrade(p.averagePercentage, getStudentBoundaries(p.student))}</p>
+                              </div>
+                              <p className="text-[9px] text-indigo-400 font-bold mt-1 uppercase tracking-tighter">Running Average</p>
+                            </div>
+
+                            <div className={`p-4 rounded-2xl border ${p.isConcern ? 'bg-rose-50 border-rose-100' : 'bg-emerald-50 border-emerald-100'}`}>
+                              <p className={`text-[10px] font-black uppercase tracking-widest mb-1.5 flex items-center gap-1.5 ${p.isConcern ? 'text-rose-500' : 'text-emerald-500'}`}>
+                                {p.isConcern ? <AlertCircle className="w-3 h-3" /> : <ShieldCheck className="w-3 h-3" />}
+                                Status
+                              </p>
+                              <p className={`text-sm font-black uppercase tracking-tight leading-none ${p.isConcern ? 'text-rose-600 font-black' : 'text-emerald-600'}`}>
+                                {p.isConcern ? 'Critical Alert' : p.status.replace('-', ' ')}
+                              </p>
+                              <p className={`text-[9px] font-bold mt-1 uppercase tracking-tighter ${p.isConcern ? 'text-rose-400' : 'text-emerald-400'}`}>
+                                {p.isConcern ? 'Significant drop detected' : 'Within expectations'}
+                              </p>
+                            </div>
+
+                            <div className="bg-slate-50 border border-slate-200 p-4 rounded-2xl">
+                              <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1.5 flex items-center gap-1.5">
+                                <History className="w-3 h-3" />
+                                Growth
+                              </p>
+                              <div className="flex items-center gap-2">
+                                {getTrendIcon(p.trend)}
+                                <p className="text-sm font-black text-slate-700 capitalize leading-none">{p.trend}</p>
+                              </div>
+                              <p className="text-[9px] text-slate-400 font-bold mt-1 uppercase tracking-tighter">Recent Momentum</p>
                             </div>
                           </div>
 
@@ -5798,7 +5958,23 @@ export default function App() {
                                   </div>
                                 </div>
                               </div>
-                              <ChevronRight className="w-4 h-4 text-slate-300 group-hover/row:text-indigo-400 group-hover/row:translate-x-0.5 transition-all" />
+                              <div className="flex items-center gap-3">
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleDeleteGroup(group.id);
+                                  }}
+                                  className={`p-2 rounded-lg transition-all ${
+                                    groupStudents.length === 0 
+                                      ? 'bg-rose-50 text-rose-600 border border-rose-100 opacity-100' 
+                                      : 'text-slate-300 hover:text-rose-500 opacity-0 group-hover/row:opacity-100'
+                                  }`}
+                                  title="Delete Group"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                                <ChevronRight className="w-4 h-4 text-slate-300 group-hover/row:text-indigo-400 group-hover/row:translate-x-0.5 transition-all" />
+                              </div>
                             </div>
                           );
                         })}
@@ -6101,7 +6277,12 @@ export default function App() {
                             </div>
                             <button 
                               onClick={() => handleDeleteGroup(group.id)}
-                              className="p-2 text-slate-300 hover:text-rose-500 transition-colors opacity-0 group-hover:opacity-100"
+                              className={`p-2 rounded-lg transition-all ${
+                                groupStudents.length === 0 
+                                  ? 'bg-rose-50 text-rose-600 border border-rose-100 opacity-100' 
+                                  : 'text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 focus:opacity-100'
+                              }`}
+                              title={groupStudents.length === 0 ? "Delete Empty Group" : "Delete Group"}
                             >
                               <Trash2 className="w-4 h-4" />
                             </button>
