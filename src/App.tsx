@@ -1099,6 +1099,26 @@ export default function App() {
     return Array.from(new Set(filtered.map(s => s.groupName))).filter(Boolean).sort();
   }, [students, selectedAcademicYear, yearFilter, ibLevelFilter]);
 
+  const availablePerformanceSubjects = useMemo(() => {
+    if (yearFilter === 'all') {
+      return Array.from(new Set(Object.values(SUBJECTS_BY_YEAR).flat())).sort();
+    }
+    if (yearFilter === 'IGCSE_ALL') {
+      return Array.from(new Set([...(SUBJECTS_BY_YEAR['10 IGCSE'] || []), ...(SUBJECTS_BY_YEAR['11 IGCSE'] || [])])).sort();
+    }
+    if (yearFilter === 'IB_ALL') {
+      return Array.from(new Set([...(SUBJECTS_BY_YEAR['12 IB'] || []), ...(SUBJECTS_BY_YEAR['13 IB'] || [])])).sort();
+    }
+    return [...(SUBJECTS_BY_YEAR[yearFilter as YearGroup] || [])].sort();
+  }, [yearFilter]);
+
+  const availablePerformanceAssessments = useMemo(() => {
+    return assessments
+      .filter(a => a.academicYear === selectedAcademicYear && matchesYearFilter(a.yearGroup, yearFilter))
+      .filter(a => performanceSubjectFilter === 'all' || a.subject === performanceSubjectFilter)
+      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  }, [assessments, selectedAcademicYear, yearFilter, performanceSubjectFilter]);
+
   const topPerformers = useMemo(() => {
     return [...filteredPerformances]
       .filter(p => (p as any).hasData && p.status !== 'needs-improvement') // exclude struggling students from top performers
@@ -1114,7 +1134,27 @@ export default function App() {
   }, [filteredPerformances]);
 
   const performanceTabStats = useMemo(() => {
-    const currentYearStudents = students.filter(s => s.academicYear === selectedAcademicYear);
+    const rawStudents = students.filter(s => s.academicYear === selectedAcademicYear);
+    
+    // De-duplicate by name and year group to handle data replication issues
+    const currentYearStudents: Student[] = [];
+    const seenNames = new Set<string>();
+    
+    // Sort to prefer versions with groupName
+    const sortedRaw = [...rawStudents].sort((a, b) => {
+      if (a.groupName && !b.groupName) return -1;
+      if (!a.groupName && b.groupName) return 1;
+      return 0;
+    });
+
+    for (const s of sortedRaw) {
+      const key = `${s.name.toLowerCase()}|${normYear(s.yearGroup)}`;
+      if (!seenNames.has(key)) {
+        currentYearStudents.push(s);
+        seenNames.add(key);
+      }
+    }
+
     const currentYearAssessments = assessments.filter(a => a.academicYear === selectedAcademicYear);
 
     return currentYearStudents.map(student => {
@@ -1128,7 +1168,8 @@ export default function App() {
           if (!m.assessment) return false;
           const subjectMatches = performanceSubjectFilter === 'all' || m.assessment.subject === performanceSubjectFilter;
           const levelMatches = !m.assessment.ibLevel || m.assessment.ibLevel === 'Both' || m.assessment.ibLevel === student.ibLevel;
-          return subjectMatches && levelMatches;
+          const assessmentMatches = performanceAssessmentFilter === 'all' || m.assessmentId === performanceAssessmentFilter;
+          return subjectMatches && levelMatches && assessmentMatches;
         })
         .filter(m => matchesYearFilter(m.assessment.yearGroup, yearFilter))
         .sort((a, b) => new Date(a.assessment.date).getTime() - new Date(b.assessment.date).getTime());
@@ -1195,7 +1236,7 @@ export default function App() {
         hasData: sittingMarks.length > 0
       };
     }).filter(p => p.count > 0); 
-  }, [students, assessments, marks, performanceSubjectFilter, yearFilter, selectedAcademicYear, yearBoundaries]);
+  }, [students, assessments, marks, performanceSubjectFilter, performanceAssessmentFilter, yearFilter, selectedAcademicYear, yearBoundaries]);
 
   const calculateGradeDistribution = (stats: any[]) => {
     const distribution: Record<string, number> = {};
@@ -4525,11 +4566,28 @@ export default function App() {
                     <select 
                       className="bg-transparent text-sm font-bold text-slate-700 outline-none cursor-pointer min-w-[120px]"
                       value={performanceSubjectFilter}
-                      onChange={(e) => setPerformanceSubjectFilter(e.target.value)}
+                      onChange={(e) => {
+                        setPerformanceSubjectFilter(e.target.value);
+                        setPerformanceAssessmentFilter('all');
+                      }}
                     >
                       <option value="all">All Subjects</option>
-                      {Array.from(new Set(assessments.filter(a => a.academicYear === selectedAcademicYear).map(a => a.subject))).map(s => (
+                      {availablePerformanceSubjects.map(s => (
                         <option key={s} value={s}>{s}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-2 bg-white px-3 py-2 rounded-xl border border-slate-200 shadow-sm">
+                    <BarChart3 className="w-4 h-4 text-slate-400" />
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Assessment</span>
+                    <select 
+                      className="bg-transparent text-sm font-bold text-slate-700 outline-none cursor-pointer min-w-[120px] max-w-[200px]"
+                      value={performanceAssessmentFilter}
+                      onChange={(e) => setPerformanceAssessmentFilter(e.target.value)}
+                    >
+                      <option value="all">All Assessments</option>
+                      {availablePerformanceAssessments.map(a => (
+                        <option key={a.id} value={a.id}>{a.name}</option>
                       ))}
                     </select>
                   </div>
