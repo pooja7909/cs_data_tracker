@@ -1,5 +1,6 @@
 {
   "name": "Department Student Data Tracker",
   "description": "A collaborative student assessment and marks tracking tool for school departments, supporting Year 7-13 grading systems.",
-  "requestFramePermissions": []
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
