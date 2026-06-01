@@ -6,6 +6,7 @@ import fs from "fs";
 import { Server } from "socket.io";
 import { createServer } from "http";
 import bcrypt from 'bcryptjs';
+import { GoogleGenAI, Type } from "@google/genai";
 
 const db = new Database("data.db");
 
@@ -85,6 +86,77 @@ async function startServer() {
       res.json({ success: true });
     } else {
       res.status(401).json({ success: false, error: "Invalid password" });
+    }
+  });
+
+  // Gemini Question Extraction API (Proxy)
+  app.post("/api/gemini/extract", async (req, res) => {
+    try {
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) {
+        return res.status(400).json({ error: "Gemini API key is missing. Please configuration your Gemini API Key in Settings." });
+      }
+
+      const { base64Data, mimeType, extractionMode } = req.body;
+      if (!base64Data || !mimeType) {
+        return res.status(400).json({ error: "Missing body parameters: base64Data or mimeType" });
+      }
+
+      const ai = new GoogleGenAI({
+        apiKey: apiKey,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
+          }
+        }
+      });
+
+      const prompt = extractionMode === 'subparts' 
+        ? "Extract all question numbers (including sub-parts like 1a, 1b, etc.) and their maximum marks from this exam paper. Return the data as a JSON array of objects with 'number' (string) and 'maxMarks' (number) properties. Ensure the total of maxMarks matches the overall paper total if specified."
+        : "Extract only the main question numbers (1, 2, 3, etc.) and their total maximum marks for each question from this exam paper. Return the data as a JSON array of objects with 'number' (string) and 'maxMarks' (number) properties. Ensure the total of maxMarks matches the overall paper total if specified.";
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3.5-flash",
+        contents: [
+          {
+            parts: [
+              { text: prompt },
+              {
+                inlineData: {
+                  mimeType,
+                  data: base64Data,
+                },
+              },
+            ],
+          },
+        ],
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                number: { type: Type.STRING },
+                maxMarks: { type: Type.NUMBER },
+              },
+              required: ["number", "maxMarks"],
+            },
+          },
+        },
+      });
+
+      const text = response.text;
+      if (!text) {
+        return res.status(500).json({ error: "No response text received from Gemini backend." });
+      }
+
+      // Parse and return
+      const parsed = JSON.parse(text);
+      res.json(parsed);
+    } catch (error: any) {
+      console.error("Gemini server-side extraction error:", error);
+      res.status(500).json({ error: error.message || "Failed to extract questions through Gemini backend." });
     }
   });
 
