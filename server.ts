@@ -7,6 +7,7 @@ import { Server } from "socket.io";
 import { createServer } from "http";
 import bcrypt from 'bcryptjs';
 import { GoogleGenAI, Type } from "@google/genai";
+import "dotenv/config";
 
 const db = new Database("data.db");
 
@@ -156,6 +157,11 @@ async function startServer() {
       res.json(parsed);
     } catch (error: any) {
       console.error("Gemini server-side extraction error:", error);
+      try {
+        fs.writeFileSync("server-error.log", `Error Time: ${new Date().toISOString()}\nError Message: ${error.message}\nStack Trace: ${error.stack}`);
+      } catch (logErr) {
+        console.error("Failed to write server-error.log:", logErr);
+      }
       res.status(500).json({ error: error.message || "Failed to extract questions through Gemini backend." });
     }
   });
