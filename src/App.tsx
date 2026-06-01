@@ -52,7 +52,6 @@ import {
 import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
 import { motion, AnimatePresence } from 'framer-motion';
-import { GoogleGenAI, Type } from "@google/genai";
 import { getStudents, getAssessments, getMarks, getGroups, getYearBoundaries, updateYearBoundaries, deleteStudent as fbDeleteStudent, deleteAssessment as fbDeleteAssessment, deleteMark as fbDeleteMark, deleteGroup as fbDeleteGroup, subscribeToData, subscribeToConfig, addStudent as fbAddStudent, addAssessment as fbAddAssessment, addGroup as fbAddGroup, updateStudent as fbUpdateStudent, updateAssessment as fbUpdateAssessment, updateGroup as fbUpdateGroup, setMark as fbSetMark, getMarkId } from './services/firebaseService';
 import { auth, db } from './firebase';
 import { 
@@ -79,8 +78,6 @@ import {
   Group,
   Question
 } from './types';
-
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
 const normYear = (s: string | number | undefined) => {
   let str = String(s || '').toLowerCase().replace(/\s+/g, '').trim();
@@ -2209,42 +2206,24 @@ export default function App() {
         reader.readAsDataURL(file);
       });
 
-      const prompt = extractionMode === 'subparts' 
-        ? "Extract all question numbers (including sub-parts like 1a, 1b, etc.) and their maximum marks from this exam paper. Return the data as a JSON array of objects with 'number' (string) and 'maxMarks' (number) properties. Ensure the total of maxMarks matches the overall paper total if specified."
-        : "Extract only the main question numbers (1, 2, 3, etc.) and their total maximum marks for each question from this exam paper. Return the data as a JSON array of objects with 'number' (string) and 'maxMarks' (number) properties. Ensure the total of maxMarks matches the overall paper total if specified.";
-
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: [
-          {
-            parts: [
-              { text: prompt },
-              {
-                inlineData: {
-                  mimeType: file.type,
-                  data: base64Data,
-                },
-              },
-            ],
-          },
-        ],
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                number: { type: Type.STRING },
-                maxMarks: { type: Type.NUMBER },
-              },
-              required: ["number", "maxMarks"],
-            },
-          },
+      const response = await fetch("/api/gemini/extract", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
         },
+        body: JSON.stringify({
+          base64Data,
+          mimeType: file.type,
+          extractionMode
+        })
       });
 
-      const extractedQuestions: Question[] = JSON.parse(response.text || '[]');
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ error: "Server error occurred" }));
+        throw new Error(errorData.error || "Failed to extract questions from server backend.");
+      }
+
+      const extractedQuestions: Question[] = await response.json();
       
       if (extractedQuestions.length === 0) {
         throw new Error("No questions could be extracted from the paper. Please ensure the file is clear and contains question numbers and marks.");
