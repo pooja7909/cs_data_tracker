@@ -2217,7 +2217,7 @@ export default function App() {
         },
         body: JSON.stringify({
           base64Data,
-          mimeType: file.type,
+          mimeType: file.type || (file.name.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'image/jpeg'),
           extractionMode
         })
       });
