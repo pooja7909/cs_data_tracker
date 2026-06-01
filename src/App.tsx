@@ -1675,13 +1675,17 @@ export default function App() {
                       try {
                         setSaveStatus('saving');
                         // 1. Delete Group Doc
-                        await fbDeleteGroup(selectedGroupDetails.id);
+                        if (useCloudSync) {
+                          await fbDeleteGroup(selectedGroupDetails.id);
+                        }
                         
                         // 2. Clear Student groupName fields
-                        const updatePromises = groupStudents.map(s => 
-                          updateDoc(doc(db, 'students', s.id), { groupName: '' })
-                        );
-                        await Promise.all(updatePromises);
+                        if (useCloudSync) {
+                          const updatePromises = groupStudents.map(s => 
+                            fbUpdateStudent(s.id, { groupName: '' })
+                          );
+                          await Promise.all(updatePromises);
+                        }
                         
                         // 3. Sync states
                         setGroups(prev => prev.filter(g => g.id !== selectedGroupDetails.id));
@@ -2231,11 +2235,13 @@ export default function App() {
 
       const totalMaxMarks = extractedQuestions.reduce((sum, q) => sum + q.maxMarks, 0);
 
-      // Update assessment in Firestore
-      await updateDoc(doc(db, 'assessments', assessmentId), {
-        questions: extractedQuestions,
-        maxMarks: totalMaxMarks
-      });
+      // Update assessment in Firestore if Cloud Sync is enabled
+      if (useCloudSync) {
+        await fbUpdateAssessment(assessmentId, {
+          questions: extractedQuestions,
+          maxMarks: totalMaxMarks
+        });
+      }
 
       // Update local state
       setAssessments(prev => prev.map(a => 
@@ -2261,10 +2267,12 @@ export default function App() {
         try {
           setSaveStatus('saving');
           const studentMarks = marks.filter(m => m.studentId === studentId);
-          await Promise.all([
-            deleteDoc(doc(db, 'students', studentId)),
-            ...studentMarks.map(m => deleteDoc(doc(db, 'marks', m.id)))
-          ]);
+          if (useCloudSync) {
+            await Promise.all([
+              fbDeleteStudent(studentId),
+              ...studentMarks.map(m => fbDeleteMark(m.id))
+            ]);
+          }
           
           setStudents(prev => prev.filter(s => s.id !== studentId));
           setMarks(prev => prev.filter(m => m.studentId !== studentId));
@@ -2307,16 +2315,18 @@ export default function App() {
           const marksToDelete = marks.filter(m => studentIds.has(m.studentId));
           const groupToDelete = groups.find(g => g.name === groupName && g.yearGroup === year && g.academicYear === selectedAcademicYear);
           
-          const deletePromises = [
-            ...studentsToDelete.map(s => deleteDoc(doc(db, 'students', s.id))),
-            ...marksToDelete.map(m => deleteDoc(doc(db, 'marks', m.id)))
-          ];
-          
-          if (groupToDelete) {
-            deletePromises.push(deleteDoc(doc(db, 'groups', groupToDelete.id)));
+          if (useCloudSync) {
+            const deletePromises = [
+              ...studentsToDelete.map(s => fbDeleteStudent(s.id)),
+              ...marksToDelete.map(m => fbDeleteMark(m.id))
+            ];
+            
+            if (groupToDelete) {
+              deletePromises.push(fbDeleteGroup(groupToDelete.id));
+            }
+            
+            await Promise.all(deletePromises);
           }
-          
-          await Promise.all(deletePromises);
           
           setStudents(prev => prev.filter(s => !studentIds.has(s.id)));
           setMarks(prev => prev.filter(m => !studentIds.has(m.studentId)));
@@ -2427,10 +2437,12 @@ export default function App() {
         try {
           setSaveStatus('saving');
           const assessmentMarks = marks.filter(m => m.assessmentId === assessmentId);
-          await Promise.all([
-            deleteDoc(doc(db, 'assessments', assessmentId)),
-            ...assessmentMarks.map(m => deleteDoc(doc(db, 'marks', m.id)))
-          ]);
+          if (useCloudSync) {
+            await Promise.all([
+              fbDeleteAssessment(assessmentId),
+              ...assessmentMarks.map(m => fbDeleteMark(m.id))
+            ]);
+          }
           
           setAssessments(prev => prev.filter(a => a.id !== assessmentId));
           setMarks(prev => prev.filter(m => m.assessmentId !== assessmentId));
@@ -2563,12 +2575,16 @@ export default function App() {
           setSaveStatus('saving');
           const group = groups.find(g => g.id === groupId);
           if (group) {
-            await deleteDoc(doc(db, 'groups', groupId));
+            if (useCloudSync) {
+              await fbDeleteGroup(groupId);
+            }
             setGroups(prev => prev.filter(g => g.id !== groupId));
             
             // Clear groupName for students in this group
             const studentsToUpdate = students.filter(s => s.groupName === group.name && String(s.yearGroup) === String(group.yearGroup) && s.academicYear === group.academicYear);
-            await Promise.all(studentsToUpdate.map(s => updateDoc(doc(db, 'students', s.id), { groupName: '' })));
+            if (useCloudSync) {
+              await Promise.all(studentsToUpdate.map(s => fbUpdateStudent(s.id, { groupName: '' })));
+            }
             setStudents(prev => prev.map(s => studentsToUpdate.find(stu => stu.id === s.id) ? { ...s, groupName: '' } : s));
           }
           setSaveStatus('saved');
@@ -3705,12 +3721,14 @@ export default function App() {
       : SUBJECTS_BY_YEAR[newStudent.yearGroup] || [];
     const studentSubjectLevels = (newStudent as any).subjectLevels || {};
 
+    const isIB = newStudent.yearGroup === '12 IB' || newStudent.yearGroup === '13 IB';
+
     if (editingStudentId) {
       const updated = {
         ...newStudent,
         subjects: studentSubjects,
-        ...(Object.keys(studentSubjectLevels).length > 0 && { subjectLevels: studentSubjectLevels }),
-        ibLevel: newStudent.ibLevel
+        subjectLevels: isIB ? studentSubjectLevels : undefined,
+        ibLevel: isIB ? newStudent.ibLevel : undefined
       };
       setStudents(prev => prev.map(s => s.id === editingStudentId ? {
         ...s,
@@ -3725,8 +3743,8 @@ export default function App() {
         ...newStudent,
         academicYear: selectedAcademicYear,
         subjects: studentSubjects,
-        ...(Object.keys(studentSubjectLevels).length > 0 && { subjectLevels: studentSubjectLevels }),
-        ibLevel: (newStudent.yearGroup === '12 IB' || newStudent.yearGroup === '13 IB') ? newStudent.ibLevel : undefined
+        subjectLevels: isIB ? studentSubjectLevels : undefined,
+        ibLevel: isIB ? newStudent.ibLevel : undefined
       };
       setStudents(prev => [...prev, student]);
       if (useCloudSync) fbAddStudent(student);
