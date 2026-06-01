@@ -9,6 +9,27 @@ import bcrypt from 'bcryptjs';
 import { GoogleGenAI, Type } from "@google/genai";
 import "dotenv/config";
 
+// Global error handlers to log any server-side exceptions immediately
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught exception:", err);
+  try {
+    fs.writeFileSync("uncaught-error.log", `Time: ${new Date().toISOString()}\nMessage: ${err.message}\nStack: ${err.stack}`);
+  } catch (e) {
+    console.error("Failed to write uncaught-error.log:", e);
+  }
+});
+
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("Unhandled promise rejection:", reason);
+  try {
+    const msg = reason instanceof Error ? reason.message : String(reason);
+    const stack = reason instanceof Error ? reason.stack : "";
+    fs.writeFileSync("unhandled-error.log", `Time: ${new Date().toISOString()}\nMessage: ${msg}\nStack: ${stack}`);
+  } catch (e) {
+    console.error("Failed to write unhandled-error.log:", e);
+  }
+});
+
 const db = new Database("data.db");
 
 // Initialize database schema
@@ -152,9 +173,29 @@ async function startServer() {
         return res.status(500).json({ error: "No response text received from Gemini backend." });
       }
 
-      // Parse and return
-      const parsed = JSON.parse(text);
-      res.json(parsed);
+      // Parse and return with a robust sanitizer for markdown codeblocks and extra LLM texts
+      let cleanText = text.trim();
+      if (cleanText.startsWith("```")) {
+        cleanText = cleanText.replace(/^```(?:json)?\s*/i, "").replace(/```$/, "").trim();
+      }
+      
+      const startIdx = cleanText.indexOf('[');
+      const endIdx = cleanText.lastIndexOf(']');
+      if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+        cleanText = cleanText.substring(startIdx, endIdx + 1);
+      }
+
+      try {
+        const parsed = JSON.parse(cleanText);
+        res.json(parsed);
+      } catch (parseError: any) {
+        console.error("Failed to parse Gemini output as JSON. Raw text was:", text);
+        return res.status(500).json({ 
+          error: "Failed to parse the Gemini response into a question list. Please try again or upload a clearer file.", 
+          rawResponse: text,
+          parseErrorMessage: parseError.message 
+        });
+      }
     } catch (error: any) {
       console.error("Gemini server-side extraction error:", error);
       try {
@@ -244,6 +285,17 @@ async function startServer() {
       console.error("Error saving data:", error);
       res.status(500).json({ error: "Failed to save data" });
     }
+  });
+
+  // Global Express error-handling middleware
+  app.use((err: any, req: any, res: any, next: any) => {
+    console.error("Global express error catch:", err);
+    try {
+      fs.writeFileSync("express-error.log", `Error Time: ${new Date().toISOString()}\nError Message: ${err.message || String(err)}\nStack Trace: ${err.stack || ""}`);
+    } catch (logErr) {
+      console.error("Failed to write express-error.log:", logErr);
+    }
+    res.status(err.status || 500).json({ error: err.message || "An internal server error occurred" });
   });
 
   // Vite middleware for development
