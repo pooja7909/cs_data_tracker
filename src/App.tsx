@@ -2841,20 +2841,36 @@ export default function App() {
         };
         const newTotalScore = Object.values(newQuestionScores).reduce((sum: number, s: number) => sum + s, 0);
         
+        const updatedMark = {
+          ...existingMark,
+          questionScores: newQuestionScores,
+          score: newTotalScore
+        };
+
+        if (useCloudSync) {
+          fbSetMark(updatedMark);
+        }
+
         return prev.map(m => 
           (m.studentId === studentId && m.assessmentId === assessmentId)
-            ? { ...m, questionScores: newQuestionScores, score: newTotalScore }
+            ? updatedMark
             : m
         );
       } else {
         const newQuestionScores: Record<string, number> = { [questionNumber]: score };
-        return [...prev, { 
-          id: Math.random().toString(36).substr(2, 9),
+        const newMark = { 
+          id: getMarkId(studentId, assessmentId),
           studentId, 
           assessmentId, 
           questionScores: newQuestionScores, 
           score 
-        }];
+        };
+
+        if (useCloudSync) {
+          fbSetMark(newMark);
+        }
+
+        return [...prev, newMark];
       }
     });
   };
@@ -7764,6 +7780,13 @@ export default function App() {
                           />
                         </label>
                       </div>
+                    </div>
+
+                    <div className="bg-slate-50 text-slate-600 text-xs px-4 py-2.5 rounded-xl border border-slate-200 flex items-center gap-2 mb-4">
+                      <AlertCircle className="w-4 h-4 text-indigo-500 flex-shrink-0" />
+                      <span>
+                        Currently showing {extractionMode === 'questions' ? 'Main Questions' : 'Sub-parts'}. If this doesn't match your layout, toggle the <strong>Questions/Sub-parts</strong> setting and click <strong>Re-upload Paper</strong>.
+                      </span>
                     </div>
 
                     <div className="flex-1 overflow-auto border border-slate-200 rounded-2xl shadow-sm bg-white">
