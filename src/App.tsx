@@ -3776,8 +3776,13 @@ export default function App() {
         if (a.id === assessmentId) {
           const studentId = marks.find(m => m.assessmentId === a.id)?.studentId;
           const yearGroup = students.find(s => s.id === studentId)?.yearGroup || 7;
-          const currentBoundaries = a.boundaries || [...(yearBoundaries[yearGroup] || [])];
-          return { ...a, boundaries: [...currentBoundaries, { grade: 'New', minPercentage: 0 }] };
+          const rawBoundaries = a.boundaries || yearBoundaries[marksGroupFilter] || yearBoundaries[yearGroup] || [];
+          const currentBoundaries = rawBoundaries.map(b => ({ ...b }));
+          const updatedBoundaries = [...currentBoundaries, { grade: 'New', minPercentage: 0 }];
+          if (useCloudSync) {
+            fbUpdateAssessment(assessmentId, { boundaries: updatedBoundaries });
+          }
+          return { ...a, boundaries: updatedBoundaries };
         }
         return a;
       }));
@@ -7503,7 +7508,11 @@ export default function App() {
                       <button 
                         onClick={() => {
                           const assessment = assessments.find(a => a.id === showMarksModal)!;
-                          setAssessments(prev => prev.map(a => a.id === showMarksModal ? { ...a, isLocked: !a.isLocked } : a));
+                          const nextLocked = !assessment.isLocked;
+                          setAssessments(prev => prev.map(a => a.id === showMarksModal ? { ...a, isLocked: nextLocked } : a));
+                          if (useCloudSync) {
+                            fbUpdateAssessment(showMarksModal, { isLocked: nextLocked });
+                          }
                         }}
                         className={`p-1.5 rounded-lg border transition-all flex items-center gap-1.5 ${
                           assessments.find(a => a.id === showMarksModal)?.isLocked 
@@ -7535,83 +7544,97 @@ export default function App() {
                       </p>
                     </div>
                     <div className="space-y-3">
-                      {(assessments.find(a => a.id === showMarksModal)?.boundaries || yearBoundaries[marksGroupFilter] || yearBoundaries[assessments.find(a => a.id === showMarksModal)?.yearGroup || 7] || [])
-                        .sort((a, b) => b.minPercentage - a.minPercentage)
-                        .map((boundary, idx) => {
-                          const assessment = assessments.find(a => a.id === showMarksModal)!;
-                          const sourceBoundaries = assessment.boundaries || yearBoundaries[marksGroupFilter] || yearBoundaries[assessment.yearGroup] || [];
-                          const originalIdx = sourceBoundaries.indexOf(boundary);
-
-                          return (
-                            <div key={idx} className={`flex items-center gap-3 p-3 rounded-xl border transition-all ${
-                              assessment.isLocked ? 'bg-slate-100/50 border-slate-100 opacity-80' : 'bg-slate-50 border-slate-100'
-                            }`}>
-                              <div className="flex flex-col items-center">
-                                <span className="text-[7px] text-slate-400 uppercase font-bold mb-0.5">Grade</span>
-                                <input 
-                                  type="text"
-                                  disabled={assessment.isLocked}
-                                  className={`w-10 h-10 bg-white border border-slate-200 rounded-lg flex items-center justify-center font-bold text-indigo-600 text-center text-xs outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm ${assessment.isLocked ? 'cursor-not-allowed text-slate-400' : ''}`}
-                                  value={boundary.grade}
-                                  onChange={(e) => {
-                                    if (assessment.isLocked) return;
-                                    const currentBoundaries = [...sourceBoundaries];
-                                    currentBoundaries[originalIdx].grade = e.target.value;
-                                    setAssessments(prev => prev.map(a => a.id === showMarksModal ? { ...a, boundaries: currentBoundaries } : a));
-                                  }}
-                                />
-                              </div>
-                              <div className="flex-1">
-                                <div className="flex justify-between text-[10px] mb-1">
-                                  <span className="text-slate-500">Min %</span>
-                                  <div className="flex items-center gap-1">
-                                    <input 
-                                      type="number"
-                                      min="0"
-                                      max="100"
-                                      disabled={assessment.isLocked}
-                                      value={boundary.minPercentage}
-                                      onChange={(e) => {
-                                        if (assessment.isLocked) return;
-                                        const val = parseInt(e.target.value) || 0;
-                                        const currentBoundaries = [...sourceBoundaries];
-                                        currentBoundaries[originalIdx].minPercentage = Math.min(100, Math.max(0, val));
-                                        setAssessments(prev => prev.map(a => a.id === showMarksModal ? { ...a, boundaries: currentBoundaries } : a));
-                                      }}
-                                      className={`w-12 px-1 py-0.5 text-right font-bold text-slate-900 border border-slate-200 rounded outline-none focus:ring-1 focus:ring-indigo-500 text-[10px] ${assessment.isLocked ? 'cursor-not-allowed bg-slate-50 text-slate-400' : ''}`}
-                                    />
-                                    <span className={`font-bold text-[10px] ${assessment.isLocked ? 'text-slate-400' : 'text-slate-900'}`}>%</span>
-                                  </div>
+                      {(() => {
+                        const assessment = assessments.find(a => a.id === showMarksModal)!;
+                        const sourceBoundaries = assessment.boundaries || yearBoundaries[marksGroupFilter] || yearBoundaries[assessment.yearGroup] || [];
+                        return sourceBoundaries
+                          .map((b, i) => ({ ...b, _originalIndex: i }))
+                          .sort((a, b) => b.minPercentage - a.minPercentage)
+                          .map((boundary, sortedIdx) => {
+                            const originalIdx = boundary._originalIndex;
+                            return (
+                              <div key={sortedIdx} className={`flex items-center gap-3 p-3 rounded-xl border transition-all ${
+                                assessment.isLocked ? 'bg-slate-100/50 border-slate-100 opacity-80' : 'bg-slate-50 border-slate-100'
+                              }`}>
+                                <div className="flex flex-col items-center">
+                                  <span className="text-[7px] text-slate-400 uppercase font-bold mb-0.5">Grade</span>
+                                  <input 
+                                    type="text"
+                                    disabled={assessment.isLocked}
+                                    className={`w-10 h-10 bg-white border border-slate-200 rounded-lg flex items-center justify-center font-bold text-indigo-600 text-center text-xs outline-none focus:ring-2 focus:ring-indigo-500 shadow-sm ${assessment.isLocked ? 'cursor-not-allowed text-slate-400' : ''}`}
+                                    value={boundary.grade}
+                                    onChange={(e) => {
+                                      if (assessment.isLocked) return;
+                                      const currentBoundaries = sourceBoundaries.map(b => ({ ...b }));
+                                      currentBoundaries[originalIdx].grade = e.target.value;
+                                      setAssessments(prev => prev.map(a => a.id === showMarksModal ? { ...a, boundaries: currentBoundaries } : a));
+                                      if (useCloudSync) {
+                                        fbUpdateAssessment(showMarksModal, { boundaries: currentBoundaries });
+                                      }
+                                    }}
+                                  />
                                 </div>
-                                <input 
-                                  type="range" 
-                                  min="0" 
-                                  max="100" 
-                                  disabled={assessment.isLocked}
-                                  value={boundary.minPercentage}
-                                  onChange={(e) => {
-                                    if (assessment.isLocked) return;
-                                    const currentBoundaries = [...sourceBoundaries];
-                                    currentBoundaries[originalIdx].minPercentage = parseInt(e.target.value);
-                                    setAssessments(prev => prev.map(a => a.id === showMarksModal ? { ...a, boundaries: currentBoundaries } : a));
-                                  }}
-                                  className={`w-full h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600 ${assessment.isLocked ? 'cursor-not-allowed opacity-50' : ''}`}
-                                />
+                                <div className="flex-1">
+                                  <div className="flex justify-between text-[10px] mb-1">
+                                    <span className="text-slate-500">Min %</span>
+                                    <div className="flex items-center gap-1">
+                                      <input 
+                                        type="number"
+                                        min="0"
+                                        max="100"
+                                        disabled={assessment.isLocked}
+                                        value={boundary.minPercentage}
+                                        onChange={(e) => {
+                                          if (assessment.isLocked) return;
+                                          const val = parseInt(e.target.value) || 0;
+                                          const currentBoundaries = sourceBoundaries.map(b => ({ ...b }));
+                                          currentBoundaries[originalIdx].minPercentage = Math.min(100, Math.max(0, val));
+                                          setAssessments(prev => prev.map(a => a.id === showMarksModal ? { ...a, boundaries: currentBoundaries } : a));
+                                          if (useCloudSync) {
+                                            fbUpdateAssessment(showMarksModal, { boundaries: currentBoundaries });
+                                          }
+                                        }}
+                                        className={`w-12 px-1 py-0.5 text-right font-bold text-slate-900 border border-slate-200 rounded outline-none focus:ring-1 focus:ring-indigo-500 text-[10px] ${assessment.isLocked ? 'cursor-not-allowed bg-slate-50 text-slate-400' : ''}`}
+                                      />
+                                      <span className={`font-bold text-[10px] ${assessment.isLocked ? 'text-slate-400' : 'text-slate-900'}`}>%</span>
+                                    </div>
+                                  </div>
+                                  <input 
+                                    type="range" 
+                                    min="0" 
+                                    max="100" 
+                                    disabled={assessment.isLocked}
+                                    value={boundary.minPercentage}
+                                    onChange={(e) => {
+                                      if (assessment.isLocked) return;
+                                      const currentBoundaries = sourceBoundaries.map(b => ({ ...b }));
+                                      currentBoundaries[originalIdx].minPercentage = parseInt(e.target.value);
+                                      setAssessments(prev => prev.map(a => a.id === showMarksModal ? { ...a, boundaries: currentBoundaries } : a));
+                                      if (useCloudSync) {
+                                        fbUpdateAssessment(showMarksModal, { boundaries: currentBoundaries });
+                                      }
+                                    }}
+                                    className={`w-full h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600 ${assessment.isLocked ? 'cursor-not-allowed opacity-50' : ''}`}
+                                  />
+                                </div>
+                                {!assessment.isLocked && (
+                                  <button 
+                                    onClick={() => {
+                                      const currentBoundaries = sourceBoundaries.filter((_, i) => i !== originalIdx).map(b => ({ ...b }));
+                                      setAssessments(prev => prev.map(a => a.id === showMarksModal ? { ...a, boundaries: currentBoundaries } : a));
+                                      if (useCloudSync) {
+                                        fbUpdateAssessment(showMarksModal, { boundaries: currentBoundaries });
+                                      }
+                                    }}
+                                    className="p-1.5 text-slate-300 hover:text-rose-500 transition-colors"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
                               </div>
-                              {!assessment.isLocked && (
-                                <button 
-                                  onClick={() => {
-                                    const currentBoundaries = sourceBoundaries.filter((_, i) => i !== originalIdx);
-                                    setAssessments(prev => prev.map(a => a.id === showMarksModal ? { ...a, boundaries: currentBoundaries } : a));
-                                  }}
-                                  className="p-1.5 text-slate-300 hover:text-rose-500 transition-colors"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
-                              )}
-                            </div>
-                          );
-                        })}
+                            );
+                          });
+                      })()}
                       {!assessments.find(a => a.id === showMarksModal)?.isLocked && (
                         <button 
                           onClick={() => handleAddGrade(true, showMarksModal)}
