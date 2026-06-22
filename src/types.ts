@@ -53,6 +53,7 @@ export interface Mark {
   resitMaxMarks?: number;
   questionScores?: Record<string, number>;
   absent?: boolean;
+  newAdmission?: boolean;
 }
 
 export interface GradeBoundary {
