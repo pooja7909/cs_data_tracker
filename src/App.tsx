@@ -953,9 +953,9 @@ export default function App() {
           })
       ].sort((a, b) => new Date(a.assessment.date).getTime() - new Date(b.assessment.date).getTime());
 
-      // Only include marks where the student actually sat the assessment (not absent)
-      const sittingMarks = studentMarks.filter(m => !(m as any).absent);
-      const absentCount = studentMarks.length - sittingMarks.length;
+      // Only include marks where the student actually sat the assessment (not absent & not a new admission)
+      const sittingMarks = studentMarks.filter(m => !(m as any).absent && !(m as any).newAdmission);
+      const absentCount = studentMarks.filter(m => (m as any).absent).length;
 
       const totalPercentage = sittingMarks.reduce((acc, m) => acc + getMarkPercentage(m, m.assessment), 0);
       const averagePercentage = sittingMarks.length > 0 ? totalPercentage / sittingMarks.length : null;
@@ -1187,8 +1187,8 @@ export default function App() {
         .filter(m => matchesYearFilter(m.assessment.yearGroup, yearFilter))
         .sort((a, b) => new Date(a.assessment.date).getTime() - new Date(b.assessment.date).getTime());
 
-      // Only include marks where the student actually sat the assessment (not absent)
-      const sittingMarks = allStudentMarks.filter(m => !(m as any).absent);
+      // Only include marks where the student actually sat the assessment (not absent & not a new admission)
+      const sittingMarks = allStudentMarks.filter(m => !(m as any).absent && !(m as any).newAdmission);
 
       const totalPercentage = sittingMarks.reduce((acc, m) => acc + getMarkPercentage(m, m.assessment), 0);
       const averagePercentage = sittingMarks.length > 0 ? totalPercentage / sittingMarks.length : 0;
@@ -1356,6 +1356,8 @@ export default function App() {
         if (mark) {
           if ((mark as any).absent) {
             row.push('ABS', 'ABS', 'ABS', 'ABS');
+          } else if ((mark as any).newAdmission) {
+            row.push('NA', 'NA', 'NA', 'NA');
           } else {
             const effPerc = getMarkPercentage(mark, a);
             const grade = getGrade(effPerc, getStudentBoundaries(p.student, a));
@@ -1732,8 +1734,8 @@ export default function App() {
     const studentTrends = performances
       .filter(p => performanceTabStats.some(ps => ps.student.id === p.student.id))
       .map(p => {
-        // Use only marks where student actually sat the exam (not absent)
-        const sitting = ((p as any).sittingMarks || p.marks.filter((m: any) => !m.absent));
+        // Use only marks where student actually sat the exam (not absent & not new admission)
+        const sitting = p.marks.filter((m: any) => !m.absent && !m.newAdmission);
         if (sitting.length < 2) return { id: p.student.id, improvement: 0 };
         
         const getMarkPerc = (m: any) => {
@@ -1841,8 +1843,8 @@ export default function App() {
       .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
     
     return relevantAssessments.map(assessment => {
-      // Only include marks where student actually sat the exam (not absent)
-      const assessmentMarks = marks.filter(m => m.assessmentId === assessment.id && !(m as any).absent);
+      // Only include marks where student actually sat the exam (not absent and not new admission)
+      const assessmentMarks = marks.filter(m => m.assessmentId === assessment.id && !(m as any).absent && !(m as any).newAdmission);
       let avg = 0;
       if (assessmentMarks.length > 0) {
         const getMarkPerc = (m: Mark) => {
@@ -1905,7 +1907,7 @@ export default function App() {
     return subjects.map(subject => {
       const subjectMarks = marks.filter(m => {
         const a = currentYearAssessments.find(as => as.id === m.assessmentId);
-        return a?.subject === subject && !(m as any).absent;
+        return a?.subject === subject && !(m as any).absent && !(m as any).newAdmission;
       });
       let avg = 0;
       if (subjectMarks.length > 0) {
@@ -3798,28 +3800,46 @@ export default function App() {
     const existingMark = marks.find(m => m.studentId === studentId && m.assessmentId === assessmentId);
     
     if (absent) {
-      const newScore = 0;
       if (existingMark) {
-        const updated = { ...existingMark, absent: true, score: newScore };
+        const updated = { ...existingMark, absent: true, newAdmission: false };
         setMarks(prev => prev.map(m => m.id === existingMark.id ? updated : m));
         if (useCloudSync) fbSetMark(updated);
       } else {
         const id = getMarkId(studentId, assessmentId);
-        const mark = { id, studentId, assessmentId, score: newScore, absent: true } as any;
+        const mark = { id, studentId, assessmentId, score: 0, absent: true, newAdmission: false } as any;
         setMarks(prev => [...prev, mark]);
         if (useCloudSync) fbSetMark(mark);
       }
     } else {
       if (existingMark) {
-        if (existingMark.score === 0) {
-          fbDeleteMark(existingMark.id);
-          setMarks(prev => prev.filter(m => m.id !== existingMark.id));
-        } else {
-          const updated = { ...existingMark };
-          delete (updated as any).absent;
-          setMarks(prev => prev.map(m => m.id === existingMark.id ? updated : m));
-          if (useCloudSync) fbSetMark(updated);
-        }
+        const updated = { ...existingMark };
+        delete (updated as any).absent;
+        setMarks(prev => prev.map(m => m.id === existingMark.id ? updated : m));
+        if (useCloudSync) fbSetMark(updated);
+      }
+    }
+  };
+
+  const handleMarkNewAdmission = (studentId: string, assessmentId: string, isNA: boolean) => {
+    const existingMark = marks.find(m => m.studentId === studentId && m.assessmentId === assessmentId);
+    
+    if (isNA) {
+      if (existingMark) {
+        const updated = { ...existingMark, newAdmission: true, absent: false };
+        setMarks(prev => prev.map(m => m.id === existingMark.id ? updated : m));
+        if (useCloudSync) fbSetMark(updated);
+      } else {
+        const id = getMarkId(studentId, assessmentId);
+        const mark = { id, studentId, assessmentId, score: 0, newAdmission: true, absent: false } as any;
+        setMarks(prev => [...prev, mark]);
+        if (useCloudSync) fbSetMark(mark);
+      }
+    } else {
+      if (existingMark) {
+        const updated = { ...existingMark };
+        delete (updated as any).newAdmission;
+        setMarks(prev => prev.map(m => m.id === existingMark.id ? updated : m));
+        if (useCloudSync) fbSetMark(updated);
       }
     }
   };
@@ -5162,10 +5182,23 @@ export default function App() {
                               </div>
                             </th>
                             {performanceTabAssessments.map(a => (
-                              <th key={a.id} className="py-3 px-2 text-[10px] font-bold text-slate-500 uppercase tracking-widest text-center min-w-[120px] max-w-[120px] border-r border-slate-200 last:border-r-0 overflow-hidden">
-                                <div className="flex flex-col items-center">
-                                  <span className="truncate max-w-[110px]" title={a.name}>{a.name}</span>
-                                  <span className="text-[8px] text-indigo-500 font-bold">max: {a.maxMarks}</span>
+                              <th key={a.id} className="relative group py-2.5 px-3 text-[10px] font-bold text-slate-500 tracking-wide text-center min-w-[160px] max-w-[200px] border-r border-slate-200 last:border-r-0 cursor-help select-none">
+                                <div className="flex flex-col items-center justify-center min-h-[36px]">
+                                  <span className="line-clamp-2 text-[11px] leading-tight font-semibold text-slate-700 whitespace-normal break-words normal-case text-center" title={a.name}>
+                                    {a.name}
+                                  </span>
+                                  <span className="text-[8px] text-indigo-500 font-extrabold mt-0.5">max: {a.maxMarks}</span>
+                                </div>
+                                
+                                {/* Elegant Custom Tooltip */}
+                                <div className="absolute top-full mt-2 left-1/2 -translate-x-1/2 bg-slate-900 border border-slate-800 text-white text-xs rounded-xl p-3 shadow-xl opacity-0 pointer-events-none group-hover:opacity-100 transition-all duration-150 ease-out z-50 min-w-[220px] max-w-[300px] text-center font-normal whitespace-normal break-words normal-case leading-relaxed">
+                                  <div className="text-[10px] uppercase tracking-wider font-extrabold text-indigo-400 mb-1">Assessment Name</div>
+                                  <div className="font-semibold text-slate-100 text-[11px]">{a.name}</div>
+                                  <div className="mt-2 pt-1.5 border-t border-slate-800 flex items-center justify-between text-[9px] text-slate-400">
+                                    <span>Max Marks:</span>
+                                    <span className="font-bold text-indigo-300">{a.maxMarks}</span>
+                                  </div>
+                                  <div className="absolute -top-1 left-1/2 -translate-x-1/2 w-2.5 h-2.5 bg-slate-900 border-t border-l border-slate-800 rotate-45"></div>
                                 </div>
                               </th>
                             ))}
@@ -5240,6 +5273,7 @@ export default function App() {
                                 {performanceTabAssessments.map(a => {
                                   const mark = p.marks.find(m => m.assessmentId === a.id);
                                   const isAbsent = mark ? (mark as any).absent : false;
+                                  const isNewAdmission = mark ? (mark as any).newAdmission : false;
                                   
                                   if (marksheetEditMode) {
                                     return (
@@ -5247,21 +5281,34 @@ export default function App() {
                                         <div className="flex flex-col items-center gap-1">
                                           <input 
                                             type="number"
+                                            disabled={isAbsent || isNewAdmission}
                                             className={`w-12 h-7 px-1 text-center text-xs font-bold border rounded-lg outline-none focus:ring-1 focus:ring-indigo-500 transition-all ${
-                                              isAbsent ? 'bg-rose-50 border-rose-200 text-rose-600' : 'bg-white border-slate-200 text-slate-900'
+                                              isAbsent ? 'bg-rose-50 border-rose-200 text-rose-600' : 
+                                              isNewAdmission ? 'bg-amber-50 border-amber-200 text-amber-600' :
+                                              'bg-white border-slate-200 text-slate-900'
                                             }`}
                                             placeholder="—"
-                                            value={mark?.score ?? ''}
+                                            value={isAbsent || isNewAdmission ? '' : (mark?.score ?? '')}
                                             onChange={(e) => handleUpdateMark(p.student.id, a.id, e.target.value === '' ? null : parseFloat(e.target.value))}
                                           />
-                                          <button 
-                                            onClick={() => handleMarkAbsent(p.student.id, a.id, !isAbsent)}
-                                            className={`text-[8px] font-bold uppercase px-1 rounded transition-all ${
-                                              isAbsent ? 'bg-rose-600 text-white' : 'bg-slate-100 text-slate-400 hover:bg-slate-200'
-                                            }`}
-                                          >
-                                            Abs
-                                          </button>
+                                          <div className="flex gap-0.5">
+                                            <button 
+                                              onClick={() => handleMarkAbsent(p.student.id, a.id, !isAbsent)}
+                                              className={`text-[8px] font-bold uppercase px-1 rounded transition-all ${
+                                                isAbsent ? 'bg-rose-600 text-white font-black' : 'bg-slate-100 text-slate-400 hover:bg-slate-200'
+                                              }`}
+                                            >
+                                              Abs
+                                            </button>
+                                            <button 
+                                              onClick={() => handleMarkNewAdmission(p.student.id, a.id, !isNewAdmission)}
+                                              className={`text-[8px] font-bold uppercase px-1 rounded transition-all ${
+                                                isNewAdmission ? 'bg-amber-500 text-white font-black' : 'bg-slate-100 text-slate-400 hover:bg-slate-200'
+                                              }`}
+                                            >
+                                              NA
+                                            </button>
+                                          </div>
                                         </div>
                                       </td>
                                     );
@@ -5276,6 +5323,7 @@ export default function App() {
                                   }
                                   
                                   const isAbsentMark = (mark as any).absent;
+                                  const isNewAdmissionMark = (mark as any).newAdmission;
                                   
                                   const getMarkPerc = (m: Mark) => {
                                     const perc = (m.score / a.maxMarks) * 100;
@@ -5294,6 +5342,8 @@ export default function App() {
                                     <td key={a.id} className="py-2.5 px-2 text-center border-r border-slate-100 last:border-r-0">
                                       {isAbsentMark ? (
                                         <span className="text-[9px] font-bold text-rose-500 px-1.5 py-0.5 bg-rose-50 rounded">ABS</span>
+                                      ) : isNewAdmissionMark ? (
+                                        <span className="text-[9px] font-bold text-amber-600 px-1.5 py-0.5 bg-amber-50 rounded" title="New Admission - excluded from statistics">NA</span>
                                       ) : (
                                         <div className="flex flex-col">
                                           <div className="flex items-center justify-center gap-1">
@@ -7324,6 +7374,7 @@ export default function App() {
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                               {groupStudents.map(student => {
                                 const mark = marks.find(m => m.studentId === student.id && m.assessmentId === showMarksModal);
+                                const isMarkDisabled = (mark as any)?.absent || (mark as any)?.newAdmission;
                                 return (
                                   <div key={student.id} className={`flex items-center justify-between p-1.5 rounded-lg border shadow-sm ${mark === undefined ? 'bg-amber-50 border-amber-100' : 'bg-white border-slate-100'}`}>
                                     <div className="min-w-0 flex-1 mr-2">
@@ -7347,6 +7398,9 @@ export default function App() {
                                       {(mark as any)?.absent && (
                                         <span className="text-[8px] font-bold text-rose-500 uppercase tracking-wide">Absent — excluded from avg</span>
                                       )}
+                                      {(mark as any)?.newAdmission && (
+                                        <span className="text-[8px] font-bold text-amber-500 uppercase tracking-wide">New Admission — excluded from avg</span>
+                                      )}
                                       {mark?.resitScore !== undefined && (
                                         <span className="text-[8px] font-bold text-indigo-500 uppercase tracking-wide">Using avg (Score + Resit)</span>
                                       )}
@@ -7365,31 +7419,45 @@ export default function App() {
                                       >
                                         <Trash2 className="w-3 h-3" />
                                       </button>
-                                      {/* Absent toggle */}
-                                      <button
-                                        type="button"
-                                        title={(mark as any)?.absent ? 'Mark as present' : 'Mark as absent'}
-                                        onClick={() => handleMarkAbsent(student.id, showMarksModal, !(mark as any)?.absent)}
-                                        className={`text-[8px] font-bold px-1.5 py-0.5 rounded border transition-all ${
-                                          (mark as any)?.absent
-                                            ? 'bg-rose-500 text-white border-rose-500'
-                                            : 'bg-white text-slate-300 border-slate-200 hover:text-rose-400 hover:border-rose-200'
-                                        }`}
-                                      >
-                                        ABS
-                                      </button>
+                                      {/* Status Toggles (ABS and NA) */}
+                                      <div className="flex gap-1">
+                                        <button
+                                          type="button"
+                                          title={(mark as any)?.absent ? 'Mark as present' : 'Mark as absent'}
+                                          onClick={() => handleMarkAbsent(student.id, showMarksModal, !(mark as any)?.absent)}
+                                          className={`text-[8px] font-bold px-1.5 py-0.5 rounded border transition-all ${
+                                            (mark as any)?.absent
+                                              ? 'bg-rose-500 text-white border-rose-500'
+                                              : 'bg-white text-slate-300 border-slate-200 hover:text-rose-400 hover:border-rose-200'
+                                          }`}
+                                        >
+                                          ABS
+                                        </button>
+                                        <button
+                                          type="button"
+                                          title={(mark as any)?.newAdmission ? 'Mark as regular student' : 'Mark as new admission'}
+                                          onClick={() => handleMarkNewAdmission(student.id, showMarksModal, !(mark as any)?.newAdmission)}
+                                          className={`text-[8px] font-bold px-1.5 py-0.5 rounded border transition-all ${
+                                            (mark as any)?.newAdmission
+                                              ? 'bg-amber-500 text-white border-amber-500'
+                                              : 'bg-white text-slate-300 border-slate-200 hover:text-amber-500 hover:border-amber-200'
+                                          }`}
+                                        >
+                                          NA
+                                        </button>
+                                      </div>
                                       <div className="flex flex-col gap-1 items-end">
                                         {marksEntryMode === 'score' && (
                                           <input 
                                             type="number" 
                                             placeholder="Score"
-                                            disabled={(mark as any)?.absent}
+                                            disabled={isMarkDisabled}
                                             className={`w-14 px-1.5 py-0.5 border rounded text-[11px] outline-none focus:ring-2 focus:ring-indigo-500 ${
-                                              (mark as any)?.absent
+                                              isMarkDisabled
                                                 ? 'bg-slate-100 border-slate-200 text-slate-300 cursor-not-allowed'
                                                 : mark === undefined ? 'bg-amber-50 border-amber-200 placeholder-amber-300' : 'bg-white border-slate-200'
                                             }`}
-                                            value={(mark as any)?.absent ? '' : (mark?.score ?? '')}
+                                            value={isMarkDisabled ? '' : (mark?.score ?? '')}
                                             min="0"
                                             max={assessment?.maxMarks || 100}
                                             onChange={e => {
@@ -7403,13 +7471,13 @@ export default function App() {
                                             <input 
                                               type="number" 
                                               placeholder="%"
-                                              disabled={(mark as any)?.absent}
+                                              disabled={isMarkDisabled}
                                               className={`w-14 px-1.5 py-0.5 pr-4 border rounded text-[11px] outline-none focus:ring-2 focus:ring-indigo-500 ${
-                                                (mark as any)?.absent
+                                                isMarkDisabled
                                                   ? 'bg-slate-100 border-slate-200 text-slate-300 cursor-not-allowed'
                                                   : mark === undefined ? 'bg-amber-50 border-amber-200 placeholder-amber-300' : 'bg-white border-slate-200'
                                               }`}
-                                              value={(mark as any)?.absent ? '' : (mark ? Math.round((mark.score / (assessment?.maxMarks || 1)) * 100) : '')}
+                                              value={isMarkDisabled ? '' : (mark ? Math.round((mark.score / (assessment?.maxMarks || 1)) * 100) : '')}
                                               min="0"
                                               max="100"
                                               onChange={e => {
@@ -7422,9 +7490,9 @@ export default function App() {
                                         )}
                                         {marksEntryMode === 'grade' && (
                                           <select
-                                            disabled={(mark as any)?.absent}
+                                            disabled={isMarkDisabled}
                                             className={`w-28 px-1.5 py-0.5 border rounded text-[10px] font-bold outline-none focus:ring-2 focus:ring-indigo-500 ${
-                                              (mark as any)?.absent
+                                              isMarkDisabled
                                                 ? 'bg-slate-100 border-slate-200 text-slate-300 cursor-not-allowed'
                                                 : mark === undefined ? 'bg-amber-50 border-amber-200' : 'bg-white border-slate-200 text-indigo-600'
                                             }`}
@@ -7447,13 +7515,13 @@ export default function App() {
                                             <input 
                                               type="number" 
                                               placeholder="Resit"
-                                              disabled={(mark as any)?.absent}
+                                              disabled={isMarkDisabled}
                                               className={`w-14 px-1.5 py-0.5 border border-dashed rounded text-[11px] outline-none focus:ring-2 focus:ring-indigo-500 ${
-                                                (mark as any)?.absent
+                                                isMarkDisabled
                                                   ? 'bg-slate-100 border-slate-200 text-slate-300 cursor-not-allowed'
                                                   : 'bg-indigo-50 border-indigo-200 placeholder-indigo-300'
                                               }`}
-                                              value={(mark as any)?.absent ? '' : (mark?.resitScore ?? '')}
+                                              value={isMarkDisabled ? '' : (mark?.resitScore ?? '')}
                                               min="0"
                                               max={mark?.resitMaxMarks || assessment?.maxMarks || 100}
                                               onChange={e => {
@@ -7464,9 +7532,9 @@ export default function App() {
                                             <input 
                                               type="number" 
                                               placeholder="Max"
-                                              disabled={(mark as any)?.absent}
+                                              disabled={isMarkDisabled}
                                               className={`w-10 px-1 py-0.5 border border-slate-100 rounded text-[9px] outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50 text-slate-500 font-bold`}
-                                              value={(mark as any)?.absent ? '' : (mark?.resitMaxMarks ?? '')}
+                                              value={isMarkDisabled ? '' : (mark?.resitMaxMarks ?? '')}
                                               min="1"
                                               onChange={e => {
                                                 const val = e.target.value;
@@ -7476,11 +7544,12 @@ export default function App() {
                                           </div>
                                         )}
                                       </div>
-                                      <span className={`text-[9px] font-bold w-7 text-right ${
-                                        (mark as any)?.absent ? 'text-rose-400' : mark === undefined ? 'text-amber-400' : 'text-slate-400'
+                                      <span className={`text-[9px] font-bold w-10 text-right ${
+                                        (mark as any)?.absent ? 'text-rose-400' : (mark as any)?.newAdmission ? 'text-amber-500' : mark === undefined ? 'text-amber-400' : 'text-slate-400'
                                       }`}>
                                         {(() => {
                                           if ((mark as any)?.absent) return 'ABS';
+                                          if ((mark as any)?.newAdmission) return 'NA';
                                           if (!mark) return '—';
                                           const score = mark.score;
                                           const resit = mark.resitScore;
